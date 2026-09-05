@@ -2,6 +2,7 @@ import argparse,csv,json,re
 from pathlib import Path
 from collections import defaultdict
 
+# Regression pass: direct MODEL/MDL anchors stay authoritative after narrow vendor-safe normalization.
 def norm(s): return re.sub(r'[^A-Z0-9]','',(s or '').upper())
 
 def correct_anchor_model(man,value,raw_context=''):
@@ -11,19 +12,15 @@ def correct_anchor_model(man,value,raw_context=''):
     """
     m=(man or '').upper(); v=norm(value); raw=(raw_context or '').upper()
 
-    # Samsung PM981-family labels: OCR commonly reads terminal B as 8/H.
     if 'SAMSUNG' in m and re.fullmatch(r'MZVLB512[8H]',v):
         return 'MZVLB512B','Samsung MZVLB terminal 8/H->B'
 
-    # Intel 256 GB SSDPEMKF family: accept correction only with independent 256GB evidence.
     if 'INTEL' in m and re.fullmatch(r'SSDPEMKF25[58]G8',v) and re.search(r'\b256\s*GB\b',raw,re.I):
         return 'SSDPEMKF256G8','Intel SSDPEMKF + 256GB evidence'
 
-    # Kioxia/Toshiba XG6: OCR can confuse the generation 6 with 8.
     if ('KIOXIA' in m or 'TOSHIBA' in m) and v=='KXG80ZNV256G' and re.search(r'\b256\s*G(?:B)?\b',raw,re.I):
         return 'KXG60ZNV256G','Kioxia XG6 8->6 + 256GB evidence'
 
-    # WD model suffix A0 is frequently read as AO.
     if 'WESTERN DIGITAL' in m and re.fullmatch(r'WD[0-9A-Z]+AO',v):
         return v[:-1]+'0','WD terminal O->0'
 
