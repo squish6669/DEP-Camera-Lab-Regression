@@ -1,0 +1,19 @@
+{
+  "candidate": "v1.2.0-production-candidate",
+  "source_commit": "4def465dbce58e2569d985b37ce735a75a1522b8",
+  "known_corpus": {
+    "images": 68,
+    "serial_exact": "60/63",
+    "serial_exact_pct": 95.2,
+    "model_exact": "64/66",
+    "model_exact_pct": 97.0
+  },
+  "runtime_ground_truth_dependency": false,
+  "status": "FROZEN_PENDING_UNSEEN_VALIDATION",
+  "requirements": {
+    "minimum_serial_exact_pct": 95.0,
+    "minimum_model_exact_pct": 90.0,
+    "max_errors": 0
+  },
+  "notes": "Freeze tuning on the known 68-image corpus. Next promotion gate is a fresh unseen drive-photo batch."
+}
