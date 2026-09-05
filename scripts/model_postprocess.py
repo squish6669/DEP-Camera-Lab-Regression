@@ -126,8 +126,6 @@ def choose_candidate(man,full_blocks,targeted_blocks):
     if base:
         chosen=base[0]
         strong=[c for c in combined if c[0]>=170]
-        if strong and strong[0][0]>chosen[0][0] if False else False:
-            pass
         if strong and strong[0][0] > chosen[0]:
             return strong[0],'high-confidence-recovery'
         return chosen,'bounded-full-baseline'
