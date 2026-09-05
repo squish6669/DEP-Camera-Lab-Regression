@@ -34,7 +34,11 @@ jobs:
           Expand-Archive -Path "Camera Roll.zip" -DestinationPath regression-images -Force
           $images = Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' }
           if ($images.Count -ne 68) { throw "Expected 68 images, found $($images.Count)" }
-          Write-Host "Regression corpus verified: $($images.Count) images"
+          $imageDirs = $images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique
+          if ($imageDirs.Count -ne 1) { throw "Expected all 68 images in one folder, found $($imageDirs.Count) folders" }
+          $imageDir = $imageDirs[0]
+          "IMAGE_DIR=$imageDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Regression corpus verified: $($images.Count) images in $imageDir"
 
       - name: Checkout RapidOCR source
         uses: actions/checkout@v4
@@ -57,9 +61,9 @@ jobs:
       - name: Run RapidOCR on 68-image corpus
         shell: pwsh
         run: |
-          & .\benchmark-publish\DriveLabelBenchmark.exe "${{ github.workspace }}\regression-images"
+          & .\benchmark-publish\DriveLabelBenchmark.exe "$env:IMAGE_DIR"
           if ($LASTEXITCODE -ne 0) { throw "Benchmark exited with code $LASTEXITCODE" }
-          $result = Get-ChildItem regression-images -Directory -Filter "RapidOCR_Benchmark_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $result = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Benchmark_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (!$result) { throw "Benchmark output folder not found" }
           "RESULT_DIR=$($result.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -79,7 +83,9 @@ jobs:
             --out-dir regression-results `
             --thresholds regression-thresholds.json
           $exit = $LASTEXITCODE
-          Get-Content regression-results/Regression-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          if (Test-Path regression-results/Regression-Summary.md) {
+            Get-Content regression-results/Regression-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
           if ($exit -ne 0) { exit $exit }
 
       - name: Upload regression evidence
