@@ -6,5 +6,6 @@
   },
   "maximums": {
     "errors": 0
-  }
+  },
+  "notes": "Baseline established from the proven 68-image RapidOCR run; extractor accuracy may improve independently."
 }
