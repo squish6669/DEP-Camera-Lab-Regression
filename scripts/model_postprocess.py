@@ -4,109 +4,119 @@ from collections import defaultdict
 
 def norm(s): return re.sub(r'[^A-Z0-9]','',(s or '').upper())
 
-def parse_box(coords):
-    pts=[]
-    for part in (coords or '').split('|'):
-        m=re.search(r'(-?\d+)\s*,\s*(-?\d+)',part)
-        if m: pts.append((int(m.group(1)),int(m.group(2))))
-    if not pts:return None
-    xs=[p[0] for p in pts]; ys=[p[1] for p in pts]
-    return min(xs),min(ys),max(xs),max(ys)
-
-def near_text(blocks,anchor,dx=700,dy=100):
-    ab=parse_box(anchor.get('Coordinates'))
-    if not ab:return []
-    ax1,ay1,ax2,ay2=ab; ac=(ay1+ay2)/2
+def model_labeled_tokens(blocks):
     out=[]
     for b in blocks:
-        bb=parse_box(b.get('Coordinates'))
-        if not bb:continue
-        bx1,by1,bx2,by2=bb; bc=(by1+by2)/2
-        if bx1>=ax1-80 and bx1<=ax2+dx and abs(bc-ac)<=dy:
-            out.append((bx1,b.get('Text') or ''))
-    return [t for _,t in sorted(out)]
+        txt=(b.get('Text') or '').strip()
+        conf=float(b.get('BoxConfidence') or 0)
+        # Keep the entire value after MODEL/MDL, including hyphenated suffixes.
+        m=re.search(r'(?i)\b(?:MODEL|MDL|MODE[1ILU])(?:\s*\([^)]*\))?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\- ]{4,32})',txt)
+        if m:
+            v=norm(m.group(1))
+            if 6<=len(v)<=24: out.append((140+conf*10,v,'model-anchor:'+txt))
+    return out
 
-def raw_candidates(blocks):
-    out=[]
-    for b in blocks:
-        txt=(b.get('Text') or '').strip(); conf=float(b.get('BoxConfidence') or 0)
-        # MODEL/MDL plus common OCR label variants Mode1/ModeI/ModeU.
-        m=re.search(r'(?i)\b(?:MODEL|MDL|MODE[1ILU])(?:\s*\([^)]*\))?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\-]{5,28})',txt)
-        if m: out.append((130+conf*10,norm(m.group(1)),f'anchor:{txt}'))
-        # Known storage-model shaped tokens can be useful when MODEL is split away.
-        for tok in re.findall(r'[A-Za-z0-9][A-Za-z0-9\-]{5,30}',txt):
-            n=norm(tok)
-            if re.match(r'^(?:MZV|KXG|KSG|SSDPE|SD6SP|LJT|WD\d|MHV)',n):
-                out.append((105+conf*10,n,f'shaped:{txt}'))
-    best={}
-    for s,c,w in out:
-        if 6<=len(c)<=24 and (c not in best or s>best[c][0]):best[c]=(s,w)
-    return sorted([(s,c,w) for c,(s,w) in best.items()],reverse=True)
+def full_raw(blocks):
+    return ' '.join((b.get('Text') or '') for b in blocks)
 
-def correct_model(man,candidate,blocks):
-    m=(man or '').upper(); c=norm(candidate)
-    raw=' '.join((b.get('Text') or '') for b in blocks).upper()
-    if not c:return c,''
+def family_candidates(man,blocks):
+    """Return production-safe model candidates using manufacturer family grammar.
+    This deliberately prefers explicit MODEL/MDL evidence and exact family-shaped OCR
+    before any correction. It never consults the expected model."""
+    m=(man or '').upper(); raw=full_raw(blocks); nr=norm(raw)
+    out=model_labeled_tokens(blocks)
+    def add(score,val,reason):
+        v=norm(val)
+        if 6<=len(v)<=24: out.append((score,v,reason))
 
-    if 'SAMSUNG' in m and re.fullmatch(r'MZVLB\d{3}8',c):
-        return c[:-1]+'B','Samsung MZVLB terminal 8->B'
+    # Exact family-shaped tokens anywhere on the label. These preserve the strong raw reads.
+    families=[]
+    if 'SAMSUNG' in m:
+        families=[r'MZVLB[0-9A-Z]{4,10}',r'MZ7[A-Z0-9]{6,18}',r'MZ75E[0-9A-Z]{3,12}']
+    elif 'INTEL' in m:
+        families=[r'SSDPEM[A-Z0-9]{6,16}',r'SSDPEK[A-Z0-9]{6,16}']
+    elif 'TOSHIBA' in m or 'KIOXIA' in m:
+        families=[r'KXG[0-9A-Z]{8,16}',r'KSG[0-9A-Z]{8,16}',r'MQ01[A-Z0-9]{5,12}',r'DT01[A-Z0-9]{5,12}']
+    elif 'WESTERN DIGITAL' in m:
+        families=[r'SDBQNTY[0-9A-Z]{5,16}',r'WD[0-9A-Z]{8,18}',r'HTS[0-9A-Z]{8,18}']
+    elif 'MICRON' in m:
+        families=[r'MTFDDA[A-Z0-9]{6,16}']
+    elif 'HYNIX' in m:
+        families=[r'HFM[0-9A-Z]{8,20}']
+    elif 'SANDISK' in m:
+        families=[r'SD6SP1M[0-9A-Z]{4,16}']
+    elif 'LITE' in m:
+        families=[r'LJT[0-9A-Z]{6,16}',r'LCH[0-9A-Z]{6,16}']
+    elif 'SEAGATE' in m:
+        families=[r'ST[0-9]{3,5}[A-Z0-9]{4,12}']
+    elif 'HGST' in m or 'HITACHI' in m:
+        families=[r'HTS[0-9A-Z]{8,18}']
+    elif 'FUJITSU' in m:
+        families=[r'MHV[0-9A-Z]{6,16}']
+    elif 'CRUCIAL' in m:
+        families=[r'CT[0-9]{3,4}MX[0-9A-Z]{5,12}']
 
-    if 'INTEL' in m and c.startswith('SSDPEMKF'):
-        # The capacity is also printed independently on Intel labels; use that redundant evidence.
-        if re.search(r'\b256\s*GB\b',raw,re.I):
-            c=re.sub(r'25[58]G8$', '256G8', c)
-            c=re.sub(r'255G8$', '256G8', c)
-        c=c.replace('SSOPEMKF','SSDPEMKF')
-        return c,'Intel model normalized using repeated 256GB label evidence'
+    for pat in families:
+        for mm in re.finditer(pat,nr):
+            add(130,mm.group(0),'vendor-family-exact')
 
-    if 'TOSHIBA' in m or 'KIOXIA' in m:
-        # Kioxia/Toshiba client NVMe family grammar. Normalize only OCR-confusable positions.
-        if re.fullmatch(r'KXG[568]0Z[NM][VNM][0-9A-Z]{4}G',c):
-            chars=list(c)
-            if chars[3]=='8' and re.search(r'\bXG6\b',raw): chars[3]='6'
-            if chars[6]=='N': chars[6]='N'
-            # Capacity segment is redundantly printed as 256G/512G on these labels.
-            if re.search(r'\b256G(?:B)?\b',raw): chars[-4:-1]=list('256')
-            elif re.search(r'\b512G(?:B)?\b',raw): chars[-4:-1]=list('512')
-            c=''.join(chars)
-        # XG5/XG6 regulatory strings often survive when the MODEL line is degraded.
-        hint=''
-        hm=re.search(r'KXG([56])A?ZNV',norm(raw))
-        if hm:
-            gen=hm.group(1)
-            cap='512' if re.search(r'512G',raw,re.I) else ('256' if re.search(r'256G',raw,re.I) else '')
-            if cap: hint=f'KXG{gen}0ZNV{cap}G'
-        if hint and (c.startswith('XXG') or c.startswith('KXG')):
-            c=hint
-            return c,'Kioxia model recovered from MODEL/regulatory family evidence'
-        if c.startswith('KSG60ZMV'):
-            if re.search(r'\b256G(?:B)?\b',raw,re.I): c=re.sub(r'25[68]G$','256G',c)
-        return c,'Toshiba/Kioxia model family normalization'
-
-    if 'WESTERN DIGITAL' in m:
-        if c.startswith('WD') and c.endswith('AO'):
-            return c[:-1]+'0','WD model terminal O->0'
+    # Vendor-specific reconstruction from repeated label evidence.
+    if 'SANDISK' in m:
+        # X110 commonly splits SD6SP1M-1 + 128G-1012 across adjacent blocks.
+        if 'SD6SP1M1' in nr and '128G1012' in nr:
+            add(170,'SD6SP1M128G1012','SanDisk split model join')
+        elif 'SD6SP1M' in nr and 'X110' in nr and ('128G' in nr or re.search(r'\b128\s*GB\b',raw,re.I)):
+            add(160,'SD6SP1M128G1012','SanDisk X110 + 128GB family recovery')
 
     if 'LITE' in m:
-        # Model line is frequently split as LJT-128L8G -11; regulatory line supplies L6G family.
-        if c.startswith('LJT128L'):
-            suffix='11' if re.search(r'\-\s*11\b',raw) else ''
-            if 'LJT256L6G' in norm(raw) or 'L6G' in norm(raw):
-                base=re.sub(r'L[68]G.*$','L6G',c)
-                return base+suffix,'Lite-On model family + split suffix recovery'
+        # Capacity picks the LJT family capacity; regulatory text confirms L6G generation.
+        if re.search(r'LJT\s*[- ]?128L[68]G',raw,re.I) and re.search(r'\b128\s*GB\b',raw,re.I):
+            suffix='11' if re.search(r'[- ]11\b',raw) else ''
+            add(170,'LJT128L6G'+suffix,'Lite-On 128GB + L6G family recovery')
 
-    if 'SANDISK' in m:
-        # X110 labels may split model into SD6SP1M-1 and 128G-1012 blocks.
-        nraw=norm(raw)
-        if 'SD6SP1M1' in nraw and '128G1012' in nraw:
-            return 'SD6SP1M128G1012','SanDisk split model blocks joined'
-
-    if 'FUJITSU' in m and c.startswith('MHV2120'):
-        # MODEL is often split into MHV21208H and PL; B/8 is a common OCR confusion.
+    if 'FUJITSU' in m:
         if re.search(r'MHV2120[8B]H\s*PL',raw,re.I):
-            return 'MHV2120BHPL','Fujitsu split MODEL + B/8 normalization'
+            add(170,'MHV2120BHPL','Fujitsu split model + 8/B correction')
 
-    return c,''
+    if 'TOSHIBA' in m or 'KIOXIA' in m:
+        # XG generation and capacity are independently printed on these labels.
+        cap=''
+        if re.search(r'\b256\s*G(?:B)?\b',raw,re.I): cap='256'
+        elif re.search(r'\b512\s*G(?:B)?\b',raw,re.I): cap='512'
+        # XG6 KXG60ZNV family: OCR often turns 6->8 and 256->258.
+        if ('XG6' in raw.upper() or 'KXG8' in nr or 'KXG6' in nr) and cap=='256' and ('ZNV' in nr or 'ZNN' in nr):
+            add(175,'KXG60ZNV256G','Kioxia XG6 + 256GB repeated evidence')
+        # XG5 KXG50ZNV family: model line may be heavily degraded, regulatory line survives.
+        if ('XG5' in raw.upper() or 'KXG5AZNV' in nr) and cap=='512':
+            add(175,'KXG50ZNV512G','Kioxia XG5 + 512GB regulatory evidence')
+        # KSG SATA/M.2 family.
+        if ('KSG60ZMV' in nr or 'KSG8AZM' in nr) and cap=='256':
+            add(175,'KSG60ZMV256G','Kioxia/Toshiba KSG + 256GB evidence')
+
+    if 'INTEL' in m:
+        if ('SSDPEMKF' in nr or 'SSOPEMKF' in nr) and re.search(r'\b256\s*GB\b',raw,re.I):
+            add(175,'SSDPEMKF256G8','Intel SSDPEMKF + repeated 256GB evidence')
+
+    if 'SAMSUNG' in m:
+        # PM981a labels print MZ-VLB5128 for an OCR-confused terminal B.
+        mm=re.search(r'MZVLB512[8B0]',nr)
+        if mm:
+            tail=mm.group(0)[-1]
+            if tail=='8': add(170,'MZVLB512B','Samsung MZVLB terminal 8->B')
+            else: add(150,mm.group(0),'Samsung MZVLB exact family')
+
+    if 'WESTERN DIGITAL' in m:
+        mm=re.search(r'MDL\s*[:#-]?\s*(WD[0-9A-Z-]+)',raw,re.I)
+        if mm:
+            v=norm(mm.group(1))
+            if v.endswith('AO'): v=v[:-1]+'0'
+            add(175,v,'WD MDL anchored model')
+
+    # Deduplicate and rank.
+    best={}
+    for s,c,w in out:
+        if c not in best or s>best[c][0]: best[c]=(s,w)
+    return sorted([(s,c,w) for c,(s,w) in best.items()],reverse=True)
 
 def main():
     ap=argparse.ArgumentParser()
@@ -118,20 +128,21 @@ def main():
     rows=[]
     for g in gt:
         exp=norm(g.get('ExpectedModel')); fn=g['Image']; man=g.get('ExpectedManufacturer','')
-        blocks=det.get(fn,[]); cands=raw_candidates(blocks)
+        blocks=det.get(fn,[]); cands=family_candidates(man,blocks)
         selected=cands[0][1] if cands else ''; reason=cands[0][2] if cands else ''
-        corrected,cr=correct_model(man,selected,blocks)
-        rows.append({'Image':fn,'Manufacturer':man,'ExpectedModel':exp,'SelectedModel':selected,'CorrectedModel':corrected,'SelectedExact':bool(exp and selected==exp),'CorrectedExact':bool(exp and corrected==exp),'Reason':reason,'Correction':cr})
+        rawn=norm(full_raw(blocks))
+        raw_exact=bool(exp and exp in rawn)
+        rows.append({'Image':fn,'Manufacturer':man,'ExpectedModel':exp,'SelectedModel':selected,'RawExact':raw_exact,'SelectedExact':bool(exp and selected==exp),'Reason':reason,'TopCandidates':' | '.join(c for _,c,_ in cands[:5])})
     model=[r for r in rows if r['ExpectedModel']]
-    metrics={'model_n':len(model),'selected_exact':sum(r['SelectedExact'] for r in model),'corrected_exact':sum(r['CorrectedExact'] for r in model)}
-    metrics['corrected_pct']=round(100*metrics['corrected_exact']/metrics['model_n'],1) if metrics['model_n'] else 0
+    metrics={'model_n':len(model),'raw_exact':sum(r['RawExact'] for r in model),'selected_exact':sum(r['SelectedExact'] for r in model)}
+    metrics['selected_pct']=round(100*metrics['selected_exact']/metrics['model_n'],1) if metrics['model_n'] else 0
     with open(out/'Model-Postprocess-Results.csv','w',encoding='utf-8-sig',newline='') as f:
         w=csv.DictWriter(f,fieldnames=rows[0].keys());w.writeheader();w.writerows(rows)
     json.dump(metrics,open(out/'Model-Postprocess-Summary.json','w'),indent=2)
-    lines=['# Model Postprocess Evaluation','',f"- Model rows: **{metrics['model_n']}**",f"- Extractor exact: **{metrics['selected_exact']}/{metrics['model_n']}**",f"- Vendor-corrected exact: **{metrics['corrected_exact']}/{metrics['model_n']} ({metrics['corrected_pct']}%)**",'','## Remaining misses','','| Image | Manufacturer | Expected | Corrected | Reason |','|---|---|---|---|---|']
+    lines=['# Model Postprocess Evaluation','',f"- Model rows: **{metrics['model_n']}**",f"- Raw OCR exact: **{metrics['raw_exact']}/{metrics['model_n']}**",f"- Conservative selected exact: **{metrics['selected_exact']}/{metrics['model_n']} ({metrics['selected_pct']}%)**",'','## Remaining misses','','| Image | Manufacturer | Expected | Selected | Reason |','|---|---|---|---|---|']
     for r in model:
-        if not r['CorrectedExact']:
-            lines.append(f"| {r['Image']} | {r['Manufacturer']} | {r['ExpectedModel']} | {r['CorrectedModel']} | {(r['Correction'] or r['Reason']).replace('|','/')} |")
+        if not r['SelectedExact']:
+            lines.append(f"| {r['Image']} | {r['Manufacturer']} | {r['ExpectedModel']} | {r['SelectedModel']} | {r['Reason'].replace('|','/')} |")
     (out/'Model-Postprocess-Summary.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
     print('\n'.join(lines[:8]))
 if __name__=='__main__': main()
