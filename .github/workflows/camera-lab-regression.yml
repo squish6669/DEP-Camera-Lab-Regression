@@ -34,7 +34,7 @@ jobs:
           Expand-Archive -Path "Camera Roll.zip" -DestinationPath regression-images -Force
           $images = Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' }
           if ($images.Count -ne 68) { throw "Expected 68 images, found $($images.Count)" }
-          $imageDirs = $images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique
+          $imageDirs = @($images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
           if ($imageDirs.Count -ne 1) { throw "Expected all 68 images in one folder, found $($imageDirs.Count) folders" }
           $imageDir = $imageDirs[0]
           "IMAGE_DIR=$imageDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
