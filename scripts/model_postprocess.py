@@ -4,29 +4,54 @@ from collections import defaultdict
 
 def norm(s): return re.sub(r'[^A-Z0-9]','',(s or '').upper())
 
-def model_labeled_tokens(blocks):
-    out=[]
+def correct_anchor_model(man,value,raw_context=''):
+    """Apply only narrow, production-safe OCR corrections to a direct MODEL/MDL read.
+
+    Corrections are vendor/family constrained and never consult ground truth.
+    """
+    m=(man or '').upper(); v=norm(value); raw=(raw_context or '').upper()
+
+    # Samsung PM981-family labels: OCR commonly reads terminal B as 8/H.
+    if 'SAMSUNG' in m and re.fullmatch(r'MZVLB512[8H]',v):
+        return 'MZVLB512B','Samsung MZVLB terminal 8/H->B'
+
+    # Intel 256 GB SSDPEMKF family: accept correction only with independent 256GB evidence.
+    if 'INTEL' in m and re.fullmatch(r'SSDPEMKF25[58]G8',v) and re.search(r'\b256\s*GB\b',raw,re.I):
+        return 'SSDPEMKF256G8','Intel SSDPEMKF + 256GB evidence'
+
+    # Kioxia/Toshiba XG6: OCR can confuse the generation 6 with 8.
+    if ('KIOXIA' in m or 'TOSHIBA' in m) and v=='KXG80ZNV256G' and re.search(r'\b256\s*G(?:B)?\b',raw,re.I):
+        return 'KXG60ZNV256G','Kioxia XG6 8->6 + 256GB evidence'
+
+    # WD model suffix A0 is frequently read as AO.
+    if 'WESTERN DIGITAL' in m and re.fullmatch(r'WD[0-9A-Z]+AO',v):
+        return v[:-1]+'0','WD terminal O->0'
+
+    return v,''
+
+def full_raw(blocks):
+    return ' '.join((b.get('Text') or '') for b in blocks)
+
+def model_labeled_tokens(blocks,man=''):
+    out=[]; raw_context=full_raw(blocks)
     for b in blocks:
         txt=(b.get('Text') or '').strip()
         conf=float(b.get('BoxConfidence') or 0)
         source=b.get('_Source','full')
         m=re.search(r'(?i)\b(?:MODEL|MDL|MODE[1ILU])(?:\s*\([^)]*\))?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\-]{4,24})',txt)
         if m:
-            v=norm(m.group(1))
-            if 6<=len(v)<=24:
-                # A complete model token read directly after MODEL/MDL on the full label
-                # is our strongest production-safe evidence. Targeted crops are useful
-                # corroboration, but must not automatically outrank the original label.
-                score=(195 if source=='full' else 145)+conf*10
-                out.append((score,v,f'{source}-model-anchor:'+txt))
+            original=norm(m.group(1))
+            if 6<=len(original)<=24:
+                v,corr=correct_anchor_model(man,original,raw_context)
+                score=(198 if source=='full' else 145)+conf*10
+                reason=f'{source}-model-anchor:'+txt
+                if corr: reason += ' ['+corr+']'
+                out.append((score,v,reason))
     return out
-
-def full_raw(blocks):
-    return ' '.join((b.get('Text') or '') for b in blocks)
 
 def family_candidates(man,blocks):
     m=(man or '').upper(); raw=full_raw(blocks); nr=norm(raw)
-    out=model_labeled_tokens(blocks)
+    out=model_labeled_tokens(blocks,man)
     def add(score,val,reason):
         v=norm(val)
         if 6<=len(v)<=24: out.append((score,v,reason))
@@ -60,8 +85,6 @@ def family_candidates(man,blocks):
     for b in blocks:
         t=norm(b.get('Text') or '')
         src=b.get('_Source','full')
-        # Bounded family regexes are fallback evidence. They can truncate a perfectly
-        # good full-label token, so they intentionally rank below a direct MODEL/MDL read.
         base=150 if src=='full' else 140
         for pat in families:
             for mm in re.finditer(pat,t): add(base,mm.group(0),f'{src}-bounded-vendor-family')
@@ -121,19 +144,13 @@ def load_det(path,source):
     return d
 
 def choose_candidate(man,full_blocks,targeted_blocks):
-    """Preserve strong full-label reads; use recovery only when evidence is stronger.
-
-    A direct full-label MODEL/MDL token is authoritative. Vendor recovery may replace
-    weaker fallback candidates, while targeted OCR primarily fills missing evidence.
-    This avoids the regression where crop/family guesses overwrote correct raw models.
-    """
+    """Direct full-label MODEL/MDL reads win after narrow vendor-safe normalization."""
     base=family_candidates(man,full_blocks)
     combined=family_candidates(man,full_blocks+targeted_blocks)
     if base:
         chosen=base[0]
-        # Full MODEL/MDL anchor (>=195 before confidence) wins outright.
-        if chosen[0]>=195:
-            return chosen,'preserve-full-model-anchor'
+        if chosen[0]>=198:
+            return chosen,'preserve-corrected-full-model-anchor'
         recoveries=[c for c in combined if c[0]>=170]
         if recoveries and recoveries[0][0] > chosen[0]:
             return recoveries[0],'high-confidence-recovery'
