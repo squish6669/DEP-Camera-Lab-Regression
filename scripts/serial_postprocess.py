@@ -22,6 +22,66 @@ def valid_token(t):
     t=norm(t)
     return 6<=len(t)<=24 and not any(t.startswith(norm(x)) for x in NEG)
 
+def alnum_piece(text):
+    """Return one short serial-looking OCR block, or empty if the block is label/noise text."""
+    t=norm(text)
+    if not t or len(t)>24:return ''
+    if any(t.startswith(norm(x)) for x in NEG):return ''
+    if not re.fullmatch(r'[A-Z0-9]+',t):return ''
+    # Spatial assembly may need short fragments such as the first 5 chars after S/N.
+    if len(t)<3:return ''
+    return t
+
+def same_row(a,b):
+    if not a or not b:return False
+    ax1,ay1,ax2,ay2=a; bx1,by1,bx2,by2=b
+    ah=max(1,ay2-ay1); bh=max(1,by2-by1)
+    ac=(ay1+ay2)/2; bc=(by1+by2)/2
+    return abs(ac-bc)<=max(22,1.25*max(ah,bh))
+
+def assemble_from_anchor(anchor,blocks,prefix=''):
+    """Join fragmented OCR blocks immediately to the right of an S/N anchor.
+
+    This is geometry-driven rather than vendor/serial hard-coding. It handles labels where
+    OCR emits S/N:, the first serial fragment, and the remainder as separate boxes.
+    """
+    abox=parse_box(anchor.get('Coordinates'))
+    if not abox:return []
+    ax1,ay1,ax2,ay2=abox
+    parts=[]
+    if prefix:
+        p=alnum_piece(prefix)
+        if p:parts.append((ax2,p,float(anchor.get('BoxConfidence') or 0),f'anchor:{anchor.get("Text") or ""}'))
+    neighbors=[]
+    for nb in blocks:
+        if nb is anchor:continue
+        nbox=parse_box(nb.get('Coordinates'))
+        if not nbox or not same_row(abox,nbox):continue
+        nx1,ny1,nx2,ny2=nbox
+        # Allow slight overlap because OCR boxes often overlap at fragment boundaries.
+        if nx1 < ax2-20 or nx1 > ax2+650:continue
+        piece=alnum_piece(nb.get('Text') or '')
+        if not piece:continue
+        neighbors.append((nx1,nx2,piece,float(nb.get('BoxConfidence') or 0),nb.get('Text') or ''))
+    neighbors.sort(key=lambda x:x[0])
+    assembled=[]
+    current=''.join(p[1] for p in parts)
+    last_x=ax2
+    confs=[p[2] for p in parts]
+    reasons=[p[3] for p in parts]
+    for nx1,nx2,piece,conf,raw in neighbors:
+        gap=nx1-last_x
+        if gap>95:
+            if current:break
+            # No prefix yet: only tolerate a modest initial gap from the anchor.
+            if gap>140:break
+        if current and len(current)+len(piece)>24:break
+        current+=piece; last_x=max(last_x,nx2); confs.append(conf); reasons.append(raw)
+        if valid_token(current):
+            avg=sum(confs)/len(confs) if confs else 0
+            assembled.append((148+avg*10,current,'spatial-join:'+' + '.join(reasons)))
+    return assembled
+
 def extract(blocks):
     out=[]
     def add(score,c,reason):
@@ -33,10 +93,18 @@ def extract(blocks):
             add(130+conf*10,m.group(1),f'inline:{txt}')
         for m in re.finditer(r'(?i)SN\s*[:#\-]\s*([A-Z0-9][A-Z0-9\-]{5,28})',txt):
             add(135+conf*10,m.group(1),f'embedded-sn:{txt}')
+
+        # Partial inline anchor, e.g. "S/N:19021" followed by a second OCR box.
+        pm=re.match(r'(?i)^\s*(?:S\s*[/\\I1|]?\s*N|SN|SERIAL(?:\s*(?:NO|NUMBER|#))?)\s*[:#\-]?\s*([A-Z0-9]{2,8})\s*$',txt)
+        if pm:
+            out.extend(assemble_from_anchor(b,blocks,pm.group(1)))
+
     anchor_re=re.compile(r'(?i)^\s*(?:S\s*[/\\I1|]?\s*N|SN|SERIAL|SER)\s*[:#\-]?\s*$')
     for b in blocks:
         txt=(b.get('Text') or '').strip()
         if not anchor_re.match(txt): continue
+        # First try a strict left-to-right fragment assembly on the same printed row.
+        out.extend(assemble_from_anchor(b,blocks,''))
         box=parse_box(b.get('Coordinates'))
         if not box: continue
         x1,y1,x2,y2=box; cy=(y1+y2)/2; h=max(1,y2-y1)
