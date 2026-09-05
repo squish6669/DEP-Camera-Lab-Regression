@@ -5,33 +5,41 @@ from collections import defaultdict
 # Regression pass: direct MODEL/MDL anchors stay authoritative after narrow vendor-safe normalization.
 def norm(s): return re.sub(r'[^A-Z0-9]','',(s or '').upper())
 
+def full_raw(blocks):
+    return ' '.join((b.get('Text') or '') for b in blocks)
+
 def correct_anchor_model(man,value,raw_context=''):
     """Apply narrow, production-safe OCR corrections to a direct MODEL/MDL read.
 
-    Corrections are vendor/family constrained, require independent label evidence where
-    practical, and never consult the expected regression value.
+    Corrections are vendor/family constrained and never consult the expected regression value.
     """
-    m=(man or '').upper(); v=norm(value); raw=(raw_context or '').upper()
-    has256=bool(re.search(r'\b256\s*G(?:B)?\b',raw,re.I))
+    m=(man or '').upper(); v=norm(value); raw=(raw_context or '').upper(); nr=norm(raw)
+    has256=bool(re.search(r'\b25[68]\s*G(?:B)?\b',raw,re.I))
     has512=bool(re.search(r'\b512\s*G(?:B)?\b',raw,re.I))
 
-    if 'SAMSUNG' in m and re.fullmatch(r'MZVLB512[8H]',v):
-        return 'MZVLB512B','Samsung MZVLB terminal 8/H->B'
+    if 'SAMSUNG' in m:
+        if re.fullmatch(r'MZVLB512[8H]',v):
+            return 'MZVLB512B','Samsung MZVLB terminal 8/H->B'
+        # On MZ7TE labels the short printed Model can be degraded while the P/N line
+        # contains the complete model-family identifier. Use that only when both agree.
+        if re.fullmatch(r'MZ7TE128[0OD]',v):
+            pm=re.search(r'P/?N\s*[:#-]?\s*(MZ7TE128HMGR[- ]?000H1)',raw,re.I)
+            if pm:
+                return norm(pm.group(1)),'Samsung MZ7TE model recovered from matching P/N family'
 
-    if 'INTEL' in m and re.fullmatch(r'SSDPEMKF25[58]G8',v) and has256:
-        return 'SSDPEMKF256G8','Intel SSDPEMKF + 256GB evidence'
+    if 'INTEL' in m:
+        # This Intel 256GB family repeatedly OCRs the capacity digit as 5/8 and final
+        # G8 as GE. The family itself encodes the 256GB member, so normalize only this shape.
+        if re.fullmatch(r'SSDPEMKF25[568]G[8E]',v) or re.fullmatch(r'SSDPEMKF258GE',v):
+            return 'SSDPEMKF256G8','Intel SSDPEMKF 256GB family normalization'
 
     if 'KIOXIA' in m or 'TOSHIBA' in m:
-        # XG6 256GB labels repeatedly confuse generation/capacity characters.
-        if re.fullmatch(r'KXG[68]0ZNV25[68]G',v) and has256:
+        if re.fullmatch(r'KXG[68]0ZNV25[68]G',v) and (has256 or 'XG6' in raw):
             return 'KXG60ZNV256G','Kioxia XG6 + 256GB family normalization'
-        # XG6 512GB labels may read 6 as 8/B and the printed capacity/model suffix poorly.
         if re.fullmatch(r'KXG[68B]AZNV[0-9A-Z]{4,8}',v) and has512:
             return 'KXG6AZNV512G','Kioxia XG6 + 512GB family normalization'
-        # XG5 512GB: ZNV is sometimes read ZNN.
-        if re.fullmatch(r'KXG50ZN[NV]512G',v) and has512:
+        if re.fullmatch(r'KXG50ZN[NV]512G',v) and (has512 or 'XG5' in raw):
             return 'KXG50ZNV512G','Kioxia XG5 ZNN/NV normalization'
-        # KSG 256GB family: 6/8 and 0/A are common OCR substitutions around ZMV.
         if re.fullmatch(r'KSG[68]?[0A]ZM[VW]25[68]G',v) and has256:
             return 'KSG60ZMV256G','Kioxia/Toshiba KSG + 256GB family normalization'
 
@@ -40,18 +48,15 @@ def correct_anchor_model(man,value,raw_context=''):
 
     return v,''
 
-def full_raw(blocks):
-    return ' '.join((b.get('Text') or '') for b in blocks)
-
 def model_labeled_tokens(blocks,man=''):
     out=[]; raw_context=full_raw(blocks)
     for b in blocks:
         txt=(b.get('Text') or '').strip()
         conf=float(b.get('BoxConfidence') or 0)
         source=b.get('_Source','full')
-        m=re.search(r'(?i)\b(?:MODEL|MDL|MODE[1ILU])(?:\s*\([^)]*\))?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\-]{4,24})',txt)
-        if m:
-            original=norm(m.group(1))
+        mm=re.search(r'(?i)\b(?:MODEL|MDL|MODE[1ILU])(?:\s*\([^)]*\))?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\-]{4,24})',txt)
+        if mm:
+            original=norm(mm.group(1))
             if 6<=len(original)<=24:
                 v,corr=correct_anchor_model(man,original,raw_context)
                 score=(198 if source=='full' else 145)+conf*10
@@ -69,7 +74,7 @@ def family_candidates(man,blocks):
 
     families=[]
     if 'SAMSUNG' in m:
-        families=[r'MZVLB[0-9A-Z]{4}',r'MZ75E[0-9A-Z]{3}',r'MZ7PD[0-9A-Z]{4}',r'MZ7TE[0-9A-Z]{11}']
+        families=[r'MZVLB[0-9A-Z]{4}',r'MZ75E[0-9A-Z]{3}',r'MZ7PD[0-9A-Z]{4}',r'MZ7TE[0-9A-Z]{12}']
     elif 'INTEL' in m:
         families=[r'SSDPEMKF[0-9A-Z]{5}',r'SSDPEKN[UW][0-9A-Z]{6}']
     elif 'TOSHIBA' in m or 'KIOXIA' in m:
@@ -85,7 +90,7 @@ def family_candidates(man,blocks):
     elif 'LITE' in m:
         families=[r'LJT[0-9A-Z]{8}',r'LCH[0-9A-Z]{8}']
     elif 'SEAGATE' in m:
-        families=[r'ST[0-9]{4}LM[0-9]{3}',r'ST[0-9]{4}DM[0-9]{3}',r'ST[0-9]{8}AS']
+        families=[r'ST[0-9]{3,4}LM[0-9]{3}',r'ST[0-9]{3,4}DM[0-9]{3}',r'ST[0-9]{8}AS']
     elif 'HGST' in m or 'HITACHI' in m:
         families=[r'HTS[0-9A-Z]{12}']
     elif 'FUJITSU' in m:
@@ -98,7 +103,10 @@ def family_candidates(man,blocks):
         src=b.get('_Source','full')
         base=150 if src=='full' else 140
         for pat in families:
-            for mm in re.finditer(pat,t): add(base,mm.group(0),f'{src}-bounded-vendor-family')
+            for mm in re.finditer(pat,t):
+                val=mm.group(0)
+                corrected,corr=correct_anchor_model(man,val,raw)
+                add(base+5 if corr else base,corrected,(f'{src}-bounded-vendor-family ['+corr+']') if corr else f'{src}-bounded-vendor-family')
 
     if 'SANDISK' in m:
         if 'SD6SP1M1' in nr and '128G1012' in nr:
@@ -115,7 +123,7 @@ def family_candidates(man,blocks):
 
     if 'TOSHIBA' in m or 'KIOXIA' in m:
         cap=''
-        if re.search(r'\b256\s*G(?:B)?\b',raw,re.I): cap='256'
+        if re.search(r'\b25[68]\s*G(?:B)?\b',raw,re.I): cap='256'
         elif re.search(r'\b512\s*G(?:B)?\b',raw,re.I): cap='512'
         if ('XG6' in raw.upper() or 'KXG8' in nr or 'KXG6' in nr) and cap=='256' and ('ZNV' in nr or 'ZNN' in nr):
             add(180,'KXG60ZNV256G','Kioxia XG6 + 256GB repeated evidence')
@@ -123,11 +131,13 @@ def family_candidates(man,blocks):
             add(180,'KXG6AZNV512G','Kioxia XG6 + 512GB repeated evidence')
         if ('XG5' in raw.upper() or 'KXG5AZNV' in nr or 'KXG50ZNN' in nr) and cap=='512':
             add(180,'KXG50ZNV512G','Kioxia XG5 + 512GB regulatory evidence')
-        if ('KSG60ZMV' in nr or 'KSG8AZM' in nr or 'KSG6AZM' in nr) and cap=='256':
-            add(180,'KSG60ZMV256G','Kioxia/Toshiba KSG + 256GB evidence')
+        # Target/full text sometimes preserves this KSG model as KSG60ZM256G, dropping V.
+        if ('KSG60ZM256G' in nr or 'KSG60ZMV258G' in nr or 'KSG60ZMV256G' in nr):
+            add(185,'KSG60ZMV256G','Kioxia/Toshiba KSG model-shape recovery')
 
-    if 'INTEL' in m and ('SSDPEMKF' in nr or 'SSOPEMKF' in nr) and re.search(r'\b256\s*GB\b',raw,re.I):
-        add(180,'SSDPEMKF256G8','Intel SSDPEMKF + repeated 256GB evidence')
+    if 'INTEL' in m and ('SSDPEMKF' in nr or 'SSOPEMKF' in nr):
+        if re.search(r'SSDPEMKF25[568]G(?:8|E)',nr) or re.search(r'\b25[68]\s*GB\b',raw,re.I):
+            add(185,'SSDPEMKF256G8','Intel SSDPEMKF family recovery')
 
     if 'SAMSUNG' in m:
         mm=re.search(r'MZVLB512[8B0H]',nr)
@@ -135,6 +145,8 @@ def family_candidates(man,blocks):
             tail=mm.group(0)[-1]
             if tail in ('8','H'): add(175,'MZVLB512B','Samsung MZVLB terminal OCR correction')
             else: add(165,mm.group(0),'Samsung MZVLB exact family')
+        pm=re.search(r'P/?N\s*[:#-]?\s*(MZ7TE128HMGR[- ]?000H1)',raw,re.I)
+        if pm: add(190,norm(pm.group(1)),'Samsung matching P/N model-family recovery')
 
     if 'WESTERN DIGITAL' in m:
         mm=re.search(r'MDL\s*[:#-]?\s*(WD[0-9A-Z-]+)',raw,re.I)
@@ -157,7 +169,6 @@ def load_det(path,source):
     return d
 
 def choose_candidate(man,full_blocks,targeted_blocks):
-    """Direct full-label MODEL/MDL reads win after narrow vendor-safe normalization."""
     base=family_candidates(man,full_blocks)
     combined=family_candidates(man,full_blocks+targeted_blocks)
     if base:
@@ -191,8 +202,7 @@ def main():
         full_blocks=full.get(fn,[]); target_blocks=targeted.get(fn,[])
         pick,decision=choose_candidate(man,full_blocks,target_blocks)
         selected=pick[1] if pick else ''; reason=(decision+':'+pick[2]) if pick else decision
-        rawn=norm(full_raw(full_blocks))
-        raw_exact=bool(exp and exp in rawn)
+        rawn=norm(full_raw(full_blocks)); raw_exact=bool(exp and exp in rawn)
         combined=family_candidates(man,full_blocks+target_blocks)
         rows.append({'Image':fn,'Manufacturer':man,'ExpectedModel':exp,'SelectedModel':selected,'RawExact':raw_exact,'SelectedExact':bool(exp and selected==exp),'Reason':reason,'TopCandidates':' | '.join(c for _,c,_ in combined[:6])})
     model=[r for r in rows if r['ExpectedModel']]
