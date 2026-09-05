@@ -1,0 +1,116 @@
+name: Camera Lab Targeted Model Reread
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/model-target-reread.yml"
+      - "scripts/model_postprocess.py"
+      - "scripts/model_target_crop.py"
+      - "scripts/serial_postprocess.py"
+      - "data/**"
+      - "Camera Roll.zip"
+
+permissions:
+  contents: read
+
+env:
+  RAPID_REPO: squish6669/RapidOCRCSharp
+
+jobs:
+  targeted-model:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Expand 68-image corpus
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path regression-images | Out-Null
+          Expand-Archive -Path "Camera Roll.zip" -DestinationPath regression-images -Force
+          $images=@(Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($images.Count -ne 68) { throw "Expected 68 images, found $($images.Count)" }
+          $dirs=@($images | ForEach-Object {$_.DirectoryName} | Sort-Object -Unique)
+          if ($dirs.Count -ne 1) { throw "Expected one image directory" }
+          "IMAGE_DIR=$($dirs[0])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.RAPID_REPO }}
+          path: RapidOCRCSharp
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish OCR runner
+        shell: pwsh
+        run: |
+          dotnet publish RapidOCRCSharp/DriveLabelSweep/DriveLabelSweep.csproj -c Release -r win-x64 --self-contained true -o sweep-publish
+          New-Item -ItemType Directory -Force -Path sweep-publish/models | Out-Null
+          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* sweep-publish/models -Recurse -Force
+
+      - name: Full-label OCR at 2048
+        shell: pwsh
+        run: |
+          & .\sweep-publish\DriveLabelSweep.exe "$env:IMAGE_DIR" "2048"
+          if ($LASTEXITCODE -ne 0) { throw "Full OCR failed" }
+          $r=Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$r) { throw "Full OCR output missing" }
+          "FULL_SWEEP=$($r.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create enhanced model-row crops
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pillow
+          python scripts/model_target_crop.py --images "$env:IMAGE_DIR" --detections "$env:FULL_SWEEP\maxSideLen_2048\RapidOCR_Detections.csv" --out-dir targeted-model-crops
+          if ($LASTEXITCODE -ne 0) { throw "Crop generation failed" }
+          $n=@(Get-ChildItem targeted-model-crops -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' }).Count
+          Write-Host "Targeted crops: $n"
+          if ($n -lt 1) { throw "No targeted crops produced" }
+
+      - name: OCR targeted model rows
+        shell: pwsh
+        run: |
+          & .\sweep-publish\DriveLabelSweep.exe "targeted-model-crops" "2048"
+          if ($LASTEXITCODE -ne 0) { throw "Targeted OCR failed" }
+          $r=Get-ChildItem targeted-model-crops -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$r) { throw "Targeted OCR output missing" }
+          "TARGET_SWEEP=$($r.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Score targeted model recovery and serial safety
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path targeted-results/model | Out-Null
+          New-Item -ItemType Directory -Force -Path targeted-results/serial | Out-Null
+          python scripts/model_postprocess.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$env:FULL_SWEEP\maxSideLen_2048\RapidOCR_Detections.csv" --targeted-detections "$env:TARGET_SWEEP\maxSideLen_2048\RapidOCR_Detections.csv" --out-dir targeted-results/model
+          if ($LASTEXITCODE -ne 0) { throw "Model score failed" }
+          python scripts/serial_postprocess.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$env:FULL_SWEEP\maxSideLen_2048\RapidOCR_Detections.csv" --images "$env:FULL_SWEEP\maxSideLen_2048\RapidOCR_Images.csv" --out-dir targeted-results/serial
+          if ($LASTEXITCODE -ne 0) { throw "Serial score failed" }
+          $m=Get-Content targeted-results/model/Model-Postprocess-Summary.json | ConvertFrom-Json
+          $s=Get-Content targeted-results/serial/Serial-Postprocess-Summary.json | ConvertFrom-Json
+          Write-Host "Model exact: $($m.selected_exact)/$($m.model_n)"
+          Write-Host "Serial exact: $($s.corrected_exact)/$($s.serial_n)"
+          if ([int]$s.corrected_exact -lt 60) { throw "Serial safety gate regressed below 60/63" }
+          Get-Content targeted-results/model/Model-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content targeted-results/serial/Serial-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload targeted reread evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camera-Lab-Targeted-Model-Reread-${{ github.run_number }}
+          path: |
+            targeted-results/**
+            targeted-model-crops/Targeted-Crops.csv
+            targeted-model-crops/RapidOCR_Sweep_*/SweepResults.csv
+            targeted-model-crops/RapidOCR_Sweep_*/maxSideLen_2048/RapidOCR_Images.csv
+            targeted-model-crops/RapidOCR_Sweep_*/maxSideLen_2048/RapidOCR_Detections.csv
+          if-no-files-found: warn
+          retention-days: 30
