@@ -54,7 +54,6 @@ def family_candidates(man,blocks):
     elif 'CRUCIAL' in m:
         families=[r'CT[0-9]{3,4}MX[0-9A-Z]{5,12}']
 
-    # Exact family tokens remain useful, but targeted-reread tokens get a modest priority boost.
     for b in blocks:
         t=norm(b.get('Text') or '')
         src=b.get('_Source','full')
@@ -116,6 +115,23 @@ def load_det(path,source):
             r['_Source']=source; d[r['FileName']].append(r)
     return d
 
+def choose_candidate(man,full_blocks,targeted_blocks):
+    """Targeted OCR is supplemental: never let a merely noisy crop displace the full-label baseline.
+
+    A targeted reread may override only when the combined evidence produces a high-confidence
+    vendor/capacity recovery (score >=170) that is strictly stronger than the baseline. This keeps
+    ordinary targeted model anchors/family fragments from replacing already-good full-label reads.
+    """
+    base=family_candidates(man,full_blocks)
+    combined=family_candidates(man,full_blocks+targeted_blocks)
+    if not base:
+        return (combined[0] if combined else None),'targeted-fallback'
+    chosen=base[0]
+    strong=[c for c in combined if c[0]>=170]
+    if strong and strong[0][0]>chosen[0]:
+        return strong[0],'strong-targeted-recovery'
+    return chosen,'preserve-full-baseline'
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--ground-truth',required=True)
@@ -128,11 +144,12 @@ def main():
     rows=[]
     for g in gt:
         exp=norm(g.get('ExpectedModel')); fn=g['Image']; man=g.get('ExpectedManufacturer','')
-        blocks=full.get(fn,[])+targeted.get(fn,[]); cands=family_candidates(man,blocks)
-        selected=cands[0][1] if cands else ''; reason=cands[0][2] if cands else ''
+        pick,decision=choose_candidate(man,full.get(fn,[]),targeted.get(fn,[]))
+        selected=pick[1] if pick else ''; reason=(decision+':'+pick[2]) if pick else decision
         rawn=norm(full_raw(full.get(fn,[])))
         raw_exact=bool(exp and exp in rawn)
-        rows.append({'Image':fn,'Manufacturer':man,'ExpectedModel':exp,'SelectedModel':selected,'RawExact':raw_exact,'SelectedExact':bool(exp and selected==exp),'Reason':reason,'TopCandidates':' | '.join(c for _,c,_ in cands[:6])})
+        combined=family_candidates(man,full.get(fn,[])+targeted.get(fn,[]))
+        rows.append({'Image':fn,'Manufacturer':man,'ExpectedModel':exp,'SelectedModel':selected,'RawExact':raw_exact,'SelectedExact':bool(exp and selected==exp),'Reason':reason,'TopCandidates':' | '.join(c for _,c,_ in combined[:6])})
     model=[r for r in rows if r['ExpectedModel']]
     metrics={'model_n':len(model),'raw_exact':sum(r['RawExact'] for r in model),'selected_exact':sum(r['SelectedExact'] for r in model)}
     metrics['selected_pct']=round(100*metrics['selected_exact']/metrics['model_n'],1) if metrics['model_n'] else 0
