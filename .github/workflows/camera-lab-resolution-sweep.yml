@@ -85,6 +85,15 @@ jobs:
               --images "$setting\RapidOCR_Images.csv" `
               --out-dir $out
             if ($LASTEXITCODE -ne 0) { throw "Scoring failed for maxSideLen=$len" }
+
+            $post = "resolution-results\$len-postprocess"
+            New-Item -ItemType Directory -Force -Path $post | Out-Null
+            python scripts/serial_postprocess.py `
+              --ground-truth data/Camera-Lab-Ground-Truth.csv `
+              --detections "$setting\RapidOCR_Detections.csv" `
+              --images "$setting\RapidOCR_Images.csv" `
+              --out-dir $post
+            if ($LASTEXITCODE -ne 0) { throw "Serial postprocess failed for maxSideLen=$len" }
           }
 
       - name: Build comparison report and choose winner
@@ -99,6 +108,7 @@ jobs:
           rows = []
           for n in lengths:
               data = json.loads((root / str(n) / 'Regression-Summary.json').read_text(encoding='utf-8'))
+              post = json.loads((root / f'{n}-postprocess' / 'Serial-Postprocess-Summary.json').read_text(encoding='utf-8'))
               m = data['metrics']
               rows.append({
                   'MaxSideLen': n,
@@ -108,6 +118,8 @@ jobs:
                   'RawSerialNear1Pct': m['raw_serial_near1_pct'],
                   'ExtractorSerialExact': m['selected_serial_exact'],
                   'ExtractorSerialExactPct': m['selected_serial_exact_pct'],
+                  'CorrectedSerialExact': post['corrected_exact'],
+                  'CorrectedSerialExactPct': post['corrected_pct'],
                   'RawModelExact': m['raw_model_exact'],
                   'RawModelExactPct': m['raw_model_exact_pct'],
                   'AverageMs': m['avg_ms'],
@@ -117,10 +129,9 @@ jobs:
                   'Errors': m['errors'],
               })
 
-          # Accuracy dominates. Runtime breaks ties.
           winner = max(rows, key=lambda r: (
+              r['CorrectedSerialExact'],
               r['RawSerialExact'],
-              r['ExtractorSerialExact'],
               r['RawModelExact'],
               -r['AverageMs']))
 
@@ -130,13 +141,17 @@ jobs:
 
           md = [
               '# Camera Lab OCR Resolution Sweep', '',
-              '| Max side | Raw serial exact | Serial near-1 | Extractor exact | Model exact | Avg ms | Median ms | P95 ms | Errors |',
+              '| Max side | Raw serial exact | Serial near-1 | Extractor exact | Vendor-corrected exact | Model exact | Avg ms | P95 ms | Errors |',
               '|---:|---:|---:|---:|---:|---:|---:|---:|---:|'
           ]
           for r in rows:
-              md.append(f"| {r['MaxSideLen']} | {r['RawSerialExact']} ({r['RawSerialExactPct']}%) | {r['RawSerialNear1']} ({r['RawSerialNear1Pct']}%) | {r['ExtractorSerialExact']} ({r['ExtractorSerialExactPct']}%) | {r['RawModelExact']} ({r['RawModelExactPct']}%) | {r['AverageMs']} | {r['MedianMs']} | {r['P95Ms']} | {r['Errors']} |")
+              md.append(f"| {r['MaxSideLen']} | {r['RawSerialExact']} ({r['RawSerialExactPct']}%) | {r['RawSerialNear1']} ({r['RawSerialNear1Pct']}%) | {r['ExtractorSerialExact']} ({r['ExtractorSerialExactPct']}%) | {r['CorrectedSerialExact']} ({r['CorrectedSerialExactPct']}%) | {r['RawModelExact']} ({r['RawModelExactPct']}%) | {r['AverageMs']} | {r['P95Ms']} | {r['Errors']} |")
           md += ['', f"## Winner: **maxSideLen {winner['MaxSideLen']}**", '',
-                 'Winner selection prioritizes exact raw serial accuracy, then spatial extractor accuracy, then model accuracy, with average runtime as the tie-breaker.']
+                 'Winner selection prioritizes vendor-corrected exact serial accuracy, then raw exact serial accuracy, then model accuracy, with average runtime as the tie-breaker.', '',
+                 '## 2048 remaining serial misses', '']
+          miss = (root / '2048-postprocess' / 'Serial-Postprocess-Summary.md').read_text(encoding='utf-8').split('## Remaining misses',1)
+          if len(miss) == 2:
+              md.append('## Remaining misses' + miss[1])
           (root / 'Resolution-Comparison.md').write_text('\n'.join(md) + '\n', encoding='utf-8')
           print('\n'.join(md))
           '@ | Set-Content compare_resolutions.py -Encoding UTF8
