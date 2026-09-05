@@ -1,3 +1,4 @@
+# Regression sweep: bounded model-family validation
 name: Camera Lab OCR Resolution Sweep
 
 on:
@@ -109,7 +110,7 @@ jobs:
               base=json.loads((root/str(n)/'Regression-Summary.json').read_text(encoding='utf-8'))['metrics']
               serial=json.loads((root/f'{n}-postprocess'/'Serial-Postprocess-Summary.json').read_text(encoding='utf-8'))
               model=json.loads((root/f'{n}-model'/'Model-Postprocess-Summary.json').read_text(encoding='utf-8'))
-              rows.append({'MaxSideLen':n,'RawSerialExact':base['raw_serial_exact'],'CorrectedSerialExact':serial['corrected_exact'],'CorrectedSerialExactPct':serial['corrected_pct'],'RawModelExact':base['raw_model_exact'],'CorrectedModelExact':model['corrected_exact'],'CorrectedModelExactPct':model['corrected_pct'],'AverageMs':base['avg_ms'],'P95Ms':base['p95_ms'],'Errors':base['errors']})
+              rows.append({'MaxSideLen':n,'RawSerialExact':base['raw_serial_exact'],'CorrectedSerialExact':serial['corrected_exact'],'CorrectedSerialExactPct':serial['corrected_pct'],'RawModelExact':base['raw_model_exact'],'CorrectedModelExact':model['selected_exact'],'CorrectedModelExactPct':model['selected_pct'],'AverageMs':base['avg_ms'],'P95Ms':base['p95_ms'],'Errors':base['errors']})
           winner=max(rows,key=lambda r:(r['CorrectedSerialExact'],r['CorrectedModelExact'],-r['AverageMs']))
           with open(root/'Resolution-Comparison.csv','w',encoding='utf-8-sig',newline='') as f:
               w=csv.DictWriter(f,fieldnames=rows[0].keys());w.writeheader();w.writerows(rows)
