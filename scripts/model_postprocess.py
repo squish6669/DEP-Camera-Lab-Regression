@@ -15,28 +15,46 @@ def model_labeled_tokens(blocks):
             if 6<=len(v)<=24: out.append((140+conf*10,v,'model-anchor:'+txt))
     return out
 
+def exact_family_tokens(man, blocks):
+    """Extract only complete, vendor-shaped model tokens. Patterns are bounded so adjacent OCR text cannot be swallowed."""
+    m=(man or '').upper(); out=[]
+    texts=[norm(b.get('Text') or '') for b in blocks]
+    texts.append(norm(full_raw(blocks)))
+    pats=[]
+    if 'WESTERN DIGITAL' in m:
+        pats=[r'SDBQNTY\d{3}G\d{4}',r'WD\d{2}[A-Z0-9]{4,6}\d{2}[A-Z0-9]{4}']
+    elif 'TOSHIBA' in m or 'KIOXIA' in m:
+        pats=[r'KXG[0-9A-Z]AZNV(?:256|512)G',r'KXG[0-9A-Z]0ZNV(?:256|512)G',r'KSG[0-9A-Z]0ZMV(?:256|512)G',r'MQ01ACF\d{3}',r'DT01ACA\d{3}']
+    elif 'HYNIX' in m:
+        pats=[r'HFM\d{3}GDJTNG\d{4}A']
+    elif 'SAMSUNG' in m:
+        pats=[r'MZVLB\d{3}[A-Z]',r'MZ7TE\d{3}HMGR\d{3}H\d']
+    elif 'INTEL' in m:
+        pats=[r'SSDPEMKF\d{3}G8']
+    elif 'SANDISK' in m:
+        pats=[r'SD6SP1M\d{3}G\d{4}']
+    elif 'LITE' in m:
+        pats=[r'LJT\d{3}L6G\d{2}',r'LCH\d{3}V2SHP']
+    elif 'SEAGATE' in m:
+        pats=[r'ST\d{7}AS',r'ST\d{3,4}LM\d{3}']
+    elif 'HGST' in m or 'HITACHI' in m:
+        pats=[r'HTS\d{6}A\d[A-Z]\d{3}']
+    elif 'MICRON' in m:
+        pats=[r'MTFDDAK\d{3}TBN']
+    elif 'FUJITSU' in m:
+        pats=[r'MHV\d{4}[A-Z]{2}PL']
+    for t in texts:
+        for pat in pats:
+            for mm in re.finditer(pat,t): out.append((190,mm.group(0),'bounded-vendor-family'))
+    return out
+
 def family_candidates(man,blocks):
-    m=(man or '').upper(); raw=full_raw(blocks); nr=norm(raw); out=model_labeled_tokens(blocks)
+    m=(man or '').upper(); raw=full_raw(blocks); nr=norm(raw); out=model_labeled_tokens(blocks)+exact_family_tokens(man,blocks)
     def add(score,val,reason):
         v=norm(val)
         if 6<=len(v)<=24: out.append((score,v,reason))
-    families=[]
-    if 'SAMSUNG' in m: families=[r'MZVLB[0-9A-Z]{4,10}',r'MZ7[A-Z0-9]{6,18}',r'MZ75E[0-9A-Z]{3,12}']
-    elif 'INTEL' in m: families=[r'SSDPEM[A-Z0-9]{6,16}',r'SSDPEK[A-Z0-9]{6,16}']
-    elif 'TOSHIBA' in m or 'KIOXIA' in m: families=[r'KXG[0-9A-Z]{8,16}',r'KSG[0-9A-Z]{8,16}',r'MQ01[A-Z0-9]{5,12}',r'DT01[A-Z0-9]{5,12}']
-    elif 'WESTERN DIGITAL' in m: families=[r'SDBQNTY[0-9A-Z]{5,16}',r'WD[0-9A-Z]{8,18}',r'HTS[0-9A-Z]{8,18}']
-    elif 'MICRON' in m: families=[r'MTFDDA[A-Z0-9]{6,16}']
-    elif 'HYNIX' in m: families=[r'HFM[0-9A-Z]{8,20}']
-    elif 'SANDISK' in m: families=[r'SD6SP1M[0-9A-Z]{4,16}']
-    elif 'LITE' in m: families=[r'LJT[0-9A-Z]{6,16}',r'LCH[0-9A-Z]{6,16}']
-    elif 'SEAGATE' in m: families=[r'ST[0-9]{3,5}[A-Z0-9]{4,12}']
-    elif 'HGST' in m or 'HITACHI' in m: families=[r'HTS[0-9A-Z]{8,18}']
-    elif 'FUJITSU' in m: families=[r'MHV[0-9A-Z]{6,16}']
-    elif 'CRUCIAL' in m: families=[r'CT[0-9]{3,4}MX[0-9A-Z]{5,12}']
-    for pat in families:
-        for mm in re.finditer(pat,nr): add(130,mm.group(0),'vendor-family-exact')
 
-    # Recovery rules require redundant label evidence and are intentionally narrow.
+    # Recovery rules require redundant label evidence and remain narrower than complete-family extraction.
     if 'SANDISK' in m:
         if 'SD6SP1M1' in nr and '128G1012' in nr: add(180,'SD6SP1M128G1012','SanDisk split fields')
         elif 'SD6SP1M' in nr and 'X110' in nr and ('128G' in nr or re.search(r'128\s*GB',raw,re.I)): add(175,'SD6SP1M128G1012','SanDisk X110 capacity evidence')
@@ -70,12 +88,7 @@ def main():
     rows=[]
     for g in gt:
         exp=norm(g.get('ExpectedModel')); fn=g['Image']; man=g.get('ExpectedManufacturer',''); blocks=det.get(fn,[]); rawn=norm(full_raw(blocks)); raw_exact=bool(exp and exp in rawn)
-        cands=family_candidates(man,blocks); selected=''; reason=''
-        # Never replace an already-exact OCR read during evaluation. In production this corresponds
-        # to preserving a high-confidence family-shaped raw candidate before recovery rules run.
-        exact_cand=next(((s,c,w) for s,c,w in cands if exp and c==exp),None)
-        if raw_exact and exact_cand: selected=exact_cand[1]; reason='preserve-strong-raw:'+exact_cand[2]
-        elif cands: selected=cands[0][1]; reason=cands[0][2]
+        cands=family_candidates(man,blocks); selected=cands[0][1] if cands else ''; reason=cands[0][2] if cands else ''
         rows.append({'Image':fn,'Manufacturer':man,'ExpectedModel':exp,'SelectedModel':selected,'RawExact':raw_exact,'SelectedExact':bool(exp and selected==exp),'Reason':reason,'TopCandidates':' | '.join(c for _,c,_ in cands[:6])})
     model=[r for r in rows if r['ExpectedModel']]; metrics={'model_n':len(model),'raw_exact':sum(r['RawExact'] for r in model),'selected_exact':sum(r['SelectedExact'] for r in model)}; metrics['selected_pct']=round(100*metrics['selected_exact']/metrics['model_n'],1) if metrics['model_n'] else 0
     with open(out/'Model-Postprocess-Results.csv','w',encoding='utf-8-sig',newline='') as f:
