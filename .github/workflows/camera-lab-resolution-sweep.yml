@@ -37,7 +37,6 @@ jobs:
           if ($imageDirs.Count -ne 1) { throw "Expected all 68 images in one folder, found $($imageDirs.Count) folders" }
           $imageDir = $imageDirs[0]
           "IMAGE_DIR=$imageDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Verified $($images.Count) private regression images in $imageDir"
 
       - name: Checkout RapidOCR source
         uses: actions/checkout@v4
@@ -65,7 +64,6 @@ jobs:
           $result = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (!$result) { throw "Sweep output directory not found" }
           "SWEEP_DIR=$($result.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Sweep output: $($result.FullName)"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -79,22 +77,26 @@ jobs:
             $setting = "$env:SWEEP_DIR\maxSideLen_$len"
             $out = "resolution-results\$len"
             New-Item -ItemType Directory -Force -Path $out | Out-Null
-            python scripts/regression_score.py `
-              --ground-truth data/Camera-Lab-Ground-Truth.csv `
-              --detections "$setting\RapidOCR_Detections.csv" `
-              --images "$setting\RapidOCR_Images.csv" `
-              --out-dir $out
+            python scripts/regression_score.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$setting\RapidOCR_Detections.csv" --images "$setting\RapidOCR_Images.csv" --out-dir $out
             if ($LASTEXITCODE -ne 0) { throw "Scoring failed for maxSideLen=$len" }
 
             $post = "resolution-results\$len-postprocess"
             New-Item -ItemType Directory -Force -Path $post | Out-Null
-            python scripts/serial_postprocess.py `
-              --ground-truth data/Camera-Lab-Ground-Truth.csv `
-              --detections "$setting\RapidOCR_Detections.csv" `
-              --images "$setting\RapidOCR_Images.csv" `
-              --out-dir $post
+            python scripts/serial_postprocess.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$setting\RapidOCR_Detections.csv" --images "$setting\RapidOCR_Images.csv" --out-dir $post
             if ($LASTEXITCODE -ne 0) { throw "Serial postprocess failed for maxSideLen=$len" }
+
+            $model = "resolution-results\$len-model"
+            New-Item -ItemType Directory -Force -Path $model | Out-Null
+            python scripts/model_postprocess.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$setting\RapidOCR_Detections.csv" --out-dir $model
+            if ($LASTEXITCODE -ne 0) { throw "Model postprocess failed for maxSideLen=$len" }
           }
+
+      - name: Enforce 2048 serial production baseline
+        shell: pwsh
+        run: |
+          $s = Get-Content resolution-results/2048-postprocess/Serial-Postprocess-Summary.json | ConvertFrom-Json
+          Write-Host "2048 corrected serial exact: $($s.corrected_exact)/$($s.serial_n)"
+          if ([int]$s.corrected_exact -lt 60) { throw "Serial regression: production baseline requires at least 60/63 exact (95%)" }
 
       - name: Build comparison report and choose winner
         shell: pwsh
@@ -102,57 +104,24 @@ jobs:
           @'
           import csv, json
           from pathlib import Path
-
-          root = Path('resolution-results')
-          lengths = [1024, 1600, 2048]
-          rows = []
-          for n in lengths:
-              data = json.loads((root / str(n) / 'Regression-Summary.json').read_text(encoding='utf-8'))
-              post = json.loads((root / f'{n}-postprocess' / 'Serial-Postprocess-Summary.json').read_text(encoding='utf-8'))
-              m = data['metrics']
-              rows.append({
-                  'MaxSideLen': n,
-                  'RawSerialExact': m['raw_serial_exact'],
-                  'RawSerialExactPct': m['raw_serial_exact_pct'],
-                  'RawSerialNear1': m['raw_serial_near1'],
-                  'RawSerialNear1Pct': m['raw_serial_near1_pct'],
-                  'ExtractorSerialExact': m['selected_serial_exact'],
-                  'ExtractorSerialExactPct': m['selected_serial_exact_pct'],
-                  'CorrectedSerialExact': post['corrected_exact'],
-                  'CorrectedSerialExactPct': post['corrected_pct'],
-                  'RawModelExact': m['raw_model_exact'],
-                  'RawModelExactPct': m['raw_model_exact_pct'],
-                  'AverageMs': m['avg_ms'],
-                  'MedianMs': m['median_ms'],
-                  'P95Ms': m['p95_ms'],
-                  'MaxMs': m['max_ms'],
-                  'Errors': m['errors'],
-              })
-
-          winner = max(rows, key=lambda r: (
-              r['CorrectedSerialExact'],
-              r['RawSerialExact'],
-              r['RawModelExact'],
-              -r['AverageMs']))
-
-          with open(root / 'Resolution-Comparison.csv', 'w', encoding='utf-8-sig', newline='') as f:
-              w = csv.DictWriter(f, fieldnames=rows[0].keys())
-              w.writeheader(); w.writerows(rows)
-
-          md = [
-              '# Camera Lab OCR Resolution Sweep', '',
-              '| Max side | Raw serial exact | Serial near-1 | Extractor exact | Vendor-corrected exact | Model exact | Avg ms | P95 ms | Errors |',
-              '|---:|---:|---:|---:|---:|---:|---:|---:|---:|'
-          ]
-          for r in rows:
-              md.append(f"| {r['MaxSideLen']} | {r['RawSerialExact']} ({r['RawSerialExactPct']}%) | {r['RawSerialNear1']} ({r['RawSerialNear1Pct']}%) | {r['ExtractorSerialExact']} ({r['ExtractorSerialExactPct']}%) | {r['CorrectedSerialExact']} ({r['CorrectedSerialExactPct']}%) | {r['RawModelExact']} ({r['RawModelExactPct']}%) | {r['AverageMs']} | {r['P95Ms']} | {r['Errors']} |")
-          md += ['', f"## Winner: **maxSideLen {winner['MaxSideLen']}**", '',
-                 'Winner selection prioritizes vendor-corrected exact serial accuracy, then raw exact serial accuracy, then model accuracy, with average runtime as the tie-breaker.', '',
-                 '## 2048 remaining serial misses', '']
-          miss = (root / '2048-postprocess' / 'Serial-Postprocess-Summary.md').read_text(encoding='utf-8').split('## Remaining misses',1)
-          if len(miss) == 2:
-              md.append('## Remaining misses' + miss[1])
-          (root / 'Resolution-Comparison.md').write_text('\n'.join(md) + '\n', encoding='utf-8')
+          root=Path('resolution-results'); rows=[]
+          for n in [1024,1600,2048]:
+              base=json.loads((root/str(n)/'Regression-Summary.json').read_text(encoding='utf-8'))['metrics']
+              serial=json.loads((root/f'{n}-postprocess'/'Serial-Postprocess-Summary.json').read_text(encoding='utf-8'))
+              model=json.loads((root/f'{n}-model'/'Model-Postprocess-Summary.json').read_text(encoding='utf-8'))
+              rows.append({'MaxSideLen':n,'RawSerialExact':base['raw_serial_exact'],'CorrectedSerialExact':serial['corrected_exact'],'CorrectedSerialExactPct':serial['corrected_pct'],'RawModelExact':base['raw_model_exact'],'CorrectedModelExact':model['corrected_exact'],'CorrectedModelExactPct':model['corrected_pct'],'AverageMs':base['avg_ms'],'P95Ms':base['p95_ms'],'Errors':base['errors']})
+          winner=max(rows,key=lambda r:(r['CorrectedSerialExact'],r['CorrectedModelExact'],-r['AverageMs']))
+          with open(root/'Resolution-Comparison.csv','w',encoding='utf-8-sig',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=rows[0].keys());w.writeheader();w.writerows(rows)
+          md=['# Camera Lab OCR Resolution Sweep','', '| Max side | Corrected serial | Corrected model | Raw model | Avg ms | P95 ms | Errors |','|---:|---:|---:|---:|---:|---:|---:|']
+          for r in rows: md.append(f"| {r['MaxSideLen']} | {r['CorrectedSerialExact']}/63 ({r['CorrectedSerialExactPct']}%) | {r['CorrectedModelExact']}/66 ({r['CorrectedModelExactPct']}%) | {r['RawModelExact']}/66 | {r['AverageMs']} | {r['P95Ms']} | {r['Errors']} |")
+          md += ['',f"## Winner: **maxSideLen {winner['MaxSideLen']}**",'', '## 2048 remaining serial misses','']
+          sm=(root/'2048-postprocess'/'Serial-Postprocess-Summary.md').read_text(encoding='utf-8').split('## Remaining misses',1)
+          if len(sm)==2: md.append('## Remaining misses'+sm[1])
+          md += ['', '## 2048 remaining model misses','']
+          mm=(root/'2048-model'/'Model-Postprocess-Summary.md').read_text(encoding='utf-8').split('## Remaining misses',1)
+          if len(mm)==2: md.append('## Remaining misses'+mm[1])
+          (root/'Resolution-Comparison.md').write_text('\n'.join(md)+'\n',encoding='utf-8')
           print('\n'.join(md))
           '@ | Set-Content compare_resolutions.py -Encoding UTF8
           python compare_resolutions.py
