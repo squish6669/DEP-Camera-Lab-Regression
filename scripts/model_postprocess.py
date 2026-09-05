@@ -14,7 +14,11 @@ def model_labeled_tokens(blocks):
         if m:
             v=norm(m.group(1))
             if 6<=len(v)<=24:
-                out.append((145+conf*10,v,f'{source}-model-anchor:'+txt))
+                # A complete model token read directly after MODEL/MDL on the full label
+                # is our strongest production-safe evidence. Targeted crops are useful
+                # corroboration, but must not automatically outrank the original label.
+                score=(195 if source=='full' else 145)+conf*10
+                out.append((score,v,f'{source}-model-anchor:'+txt))
     return out
 
 def full_raw(blocks):
@@ -56,7 +60,9 @@ def family_candidates(man,blocks):
     for b in blocks:
         t=norm(b.get('Text') or '')
         src=b.get('_Source','full')
-        base=160 if src=='full' else 150
+        # Bounded family regexes are fallback evidence. They can truncate a perfectly
+        # good full-label token, so they intentionally rank below a direct MODEL/MDL read.
+        base=150 if src=='full' else 140
         for pat in families:
             for mm in re.finditer(pat,t): add(base,mm.group(0),f'{src}-bounded-vendor-family')
 
@@ -115,23 +121,26 @@ def load_det(path,source):
     return d
 
 def choose_candidate(man,full_blocks,targeted_blocks):
-    """Prefer bounded full-label vendor shapes; targeted OCR remains supplemental.
+    """Preserve strong full-label reads; use recovery only when evidence is stronger.
 
-    Full-label evidence stays authoritative. Targeted OCR may only supply one of the
-    explicit high-confidence recovery candidates (score >=170) when it is stronger
-    than the full-label candidate. Generic crop anchors never replace a full read.
+    A direct full-label MODEL/MDL token is authoritative. Vendor recovery may replace
+    weaker fallback candidates, while targeted OCR primarily fills missing evidence.
+    This avoids the regression where crop/family guesses overwrote correct raw models.
     """
     base=family_candidates(man,full_blocks)
     combined=family_candidates(man,full_blocks+targeted_blocks)
     if base:
         chosen=base[0]
-        strong=[c for c in combined if c[0]>=170]
-        if strong and strong[0][0] > chosen[0]:
-            return strong[0],'high-confidence-recovery'
+        # Full MODEL/MDL anchor (>=195 before confidence) wins outright.
+        if chosen[0]>=195:
+            return chosen,'preserve-full-model-anchor'
+        recoveries=[c for c in combined if c[0]>=170]
+        if recoveries and recoveries[0][0] > chosen[0]:
+            return recoveries[0],'high-confidence-recovery'
         return chosen,'bounded-full-baseline'
-    strong=[c for c in combined if c[0]>=170]
-    if strong:
-        return strong[0],'targeted-high-confidence-fill'
+    recoveries=[c for c in combined if c[0]>=170]
+    if recoveries:
+        return recoveries[0],'targeted-high-confidence-fill'
     target=family_candidates(man,targeted_blocks)
     if target:
         return target[0],'targeted-fills-empty-baseline'
