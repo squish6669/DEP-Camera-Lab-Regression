@@ -83,6 +83,12 @@ def best_near(expected, raw_text):
     if not toks: return None
     return min((levenshtein(e,t),t) for t in toks)
 
+def pick(row, *names):
+    for name in names:
+        if name in row and row[name] is not None:
+            return row[name]
+    return ''
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--ground-truth',required=True)
@@ -96,13 +102,15 @@ def main():
     gt=list(csv.DictReader(open(args.ground_truth,encoding='utf-8-sig',newline='')))
     det=defaultdict(list)
     with open(args.detections,encoding='utf-8-sig',newline='') as f:
-        for r in csv.DictReader(f): det[r['FileName']].append(r)
-    img={r['FileName']:r for r in csv.DictReader(open(args.images,encoding='utf-8-sig',newline=''))}
+        for r in csv.DictReader(f): det[pick(r,'FileName','Image','Filename')].append(r)
+    img={pick(r,'FileName','Image','Filename'):r for r in csv.DictReader(open(args.images,encoding='utf-8-sig',newline=''))}
 
     rows=[]
     manuf=defaultdict(lambda: Counter())
     for g in gt:
-        fn=g['Image']; exp_s=norm(g.get('ExpectedSerial')); exp_m=norm(g.get('ExpectedModel'))
+        fn=pick(g,'Image','FileName','Filename')
+        exp_s=norm(pick(g,'ExpectedSerial','Serial','Expected Serial'))
+        exp_m=norm(pick(g,'ExpectedModel','Model','Expected Model'))
         raw=(img.get(fn) or {}).get('RawText','') or ''
         raw_n=norm(raw)
         raw_s_exact=bool(exp_s and exp_s in raw_n)
@@ -116,11 +124,12 @@ def main():
         chosen_reason=cands[0][2] if cands else ''
         selected_exact=bool(exp_s and chosen==exp_s)
         selected_near=bool(exp_s and chosen and levenshtein(exp_s,chosen)<=1)
-        verified=(g.get('Verified') or '').strip().upper()=='YES'
+        verified=(pick(g,'Verified') or '').strip().upper()=='YES'
         err=(img.get(fn) or {}).get('Error','') or ''
         ms=float((img.get(fn) or {}).get('ElapsedMilliseconds') or 0)
+        manufacturer=pick(g,'ExpectedManufacturer','Manufacturer','Expected Manufacturer')
         rows.append({
-            'Image':fn,'Manufacturer':g.get('ExpectedManufacturer',''),'ExpectedSerial':exp_s,
+            'Image':fn,'Manufacturer':manufacturer,'ExpectedSerial':exp_s,
             'SelectedSerial':chosen,'SelectedSerialExact':selected_exact,'SelectedSerialNear1':selected_near,
             'SelectedReason':chosen_reason,'RawSerialExact':raw_s_exact,'RawSerialNear1':raw_s_near,
             'ExpectedModel':exp_m,'RawModelExact':raw_m_exact,'RawModelNear1':raw_m_near,
@@ -128,7 +137,7 @@ def main():
             'CandidateCount':len(cands),'TopCandidates':' | '.join(c for _,c,_ in cands[:5])
         })
         if verified and exp_s:
-            m=manuf[g.get('ExpectedManufacturer','')]
+            m=manuf[manufacturer]
             m['n']+=1; m['raw_exact']+=int(raw_s_exact); m['raw_near']+=int(raw_s_near); m['selected_exact']+=int(selected_exact); m['selected_near']+=int(selected_near)
 
     verified_serial=[r for r in rows if r['Verified'] and r['ExpectedSerial']]
