@@ -1,0 +1,96 @@
+name: Camera Lab 68-Image Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "data/**"
+      - "regression-thresholds.json"
+      - ".github/workflows/camera-lab-regression.yml"
+  schedule:
+    - cron: "17 13 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  RAPID_REPO: squish6669/RapidOCRCSharp
+
+jobs:
+  regression:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout regression repository
+        uses: actions/checkout@v4
+
+      - name: Verify private image corpus
+        shell: pwsh
+        run: |
+          if (!(Test-Path "Camera Roll.zip")) { throw "Camera Roll.zip is missing" }
+          New-Item -ItemType Directory -Force -Path regression-images | Out-Null
+          Expand-Archive -Path "Camera Roll.zip" -DestinationPath regression-images -Force
+          $images = Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' }
+          if ($images.Count -ne 68) { throw "Expected 68 images, found $($images.Count)" }
+          Write-Host "Regression corpus verified: $($images.Count) images"
+
+      - name: Checkout RapidOCR source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.RAPID_REPO }}
+          path: RapidOCRCSharp
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish benchmark runner
+        shell: pwsh
+        run: |
+          dotnet publish RapidOCRCSharp/DriveLabelBenchmark/DriveLabelBenchmark.csproj -c Release -r win-x64 --self-contained true -o benchmark-publish
+          New-Item -ItemType Directory -Force -Path benchmark-publish/models | Out-Null
+          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* benchmark-publish/models -Recurse -Force
+
+      - name: Run RapidOCR on 68-image corpus
+        shell: pwsh
+        run: |
+          & .\benchmark-publish\DriveLabelBenchmark.exe "${{ github.workspace }}\regression-images"
+          if ($LASTEXITCODE -ne 0) { throw "Benchmark exited with code $LASTEXITCODE" }
+          $result = Get-ChildItem regression-images -Directory -Filter "RapidOCR_Benchmark_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$result) { throw "Benchmark output folder not found" }
+          "RESULT_DIR=$($result.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Score regression
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path regression-results | Out-Null
+          python scripts/regression_score.py `
+            --ground-truth data/Camera-Lab-Ground-Truth.csv `
+            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
+            --images "$env:RESULT_DIR\RapidOCR_Images.csv" `
+            --out-dir regression-results `
+            --thresholds regression-thresholds.json
+          $exit = $LASTEXITCODE
+          Get-Content regression-results/Regression-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          if ($exit -ne 0) { exit $exit }
+
+      - name: Upload regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camera-Lab-Regression-${{ github.run_number }}
+          path: |
+            regression-results/**
+            ${{ env.RESULT_DIR }}/RapidOCR_Images.csv
+            ${{ env.RESULT_DIR }}/RapidOCR_Detections.csv
+            ${{ env.RESULT_DIR }}/RapidOCR_Results.json
+          if-no-files-found: warn
+          retention-days: 30
