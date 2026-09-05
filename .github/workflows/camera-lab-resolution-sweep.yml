@@ -1,0 +1,162 @@
+name: Camera Lab OCR Resolution Sweep
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/camera-lab-resolution-sweep.yml"
+      - "scripts/**"
+      - "data/**"
+      - "Camera Roll.zip"
+
+permissions:
+  contents: read
+
+env:
+  RAPID_REPO: squish6669/RapidOCRCSharp
+
+jobs:
+  sweep:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout private regression repository
+        uses: actions/checkout@v4
+
+      - name: Verify 68-image private corpus
+        shell: pwsh
+        run: |
+          if (!(Test-Path "Camera Roll.zip")) { throw "Camera Roll.zip is missing" }
+          New-Item -ItemType Directory -Force -Path regression-images | Out-Null
+          Expand-Archive -Path "Camera Roll.zip" -DestinationPath regression-images -Force
+          $images = @(Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($images.Count -ne 68) { throw "Expected 68 images, found $($images.Count)" }
+          $imageDirs = @($images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
+          if ($imageDirs.Count -ne 1) { throw "Expected all 68 images in one folder, found $($imageDirs.Count) folders" }
+          $imageDir = $imageDirs[0]
+          "IMAGE_DIR=$imageDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Verified $($images.Count) private regression images in $imageDir"
+
+      - name: Checkout RapidOCR source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.RAPID_REPO }}
+          path: RapidOCRCSharp
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish resolution sweep runner
+        shell: pwsh
+        run: |
+          dotnet publish RapidOCRCSharp/DriveLabelSweep/DriveLabelSweep.csproj -c Release -r win-x64 --self-contained true -o sweep-publish
+          New-Item -ItemType Directory -Force -Path sweep-publish/models | Out-Null
+          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* sweep-publish/models -Recurse -Force
+
+      - name: Run 1024 vs 1600 vs 2048 sweep
+        shell: pwsh
+        run: |
+          & .\sweep-publish\DriveLabelSweep.exe "$env:IMAGE_DIR" "1024,1600,2048"
+          if ($LASTEXITCODE -ne 0) { throw "Sweep exited with code $LASTEXITCODE" }
+          $result = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$result) { throw "Sweep output directory not found" }
+          "SWEEP_DIR=$($result.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Sweep output: $($result.FullName)"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Score each resolution
+        shell: pwsh
+        run: |
+          foreach ($len in 1024,1600,2048) {
+            $setting = "$env:SWEEP_DIR\maxSideLen_$len"
+            $out = "resolution-results\$len"
+            New-Item -ItemType Directory -Force -Path $out | Out-Null
+            python scripts/regression_score.py `
+              --ground-truth data/Camera-Lab-Ground-Truth.csv `
+              --detections "$setting\RapidOCR_Detections.csv" `
+              --images "$setting\RapidOCR_Images.csv" `
+              --out-dir $out
+            if ($LASTEXITCODE -ne 0) { throw "Scoring failed for maxSideLen=$len" }
+          }
+
+      - name: Build comparison report and choose winner
+        shell: pwsh
+        run: |
+          @'
+          import csv, json
+          from pathlib import Path
+
+          root = Path('resolution-results')
+          lengths = [1024, 1600, 2048]
+          rows = []
+          for n in lengths:
+              data = json.loads((root / str(n) / 'Regression-Summary.json').read_text(encoding='utf-8'))
+              m = data['metrics']
+              rows.append({
+                  'MaxSideLen': n,
+                  'RawSerialExact': m['raw_serial_exact'],
+                  'RawSerialExactPct': m['raw_serial_exact_pct'],
+                  'RawSerialNear1': m['raw_serial_near1'],
+                  'RawSerialNear1Pct': m['raw_serial_near1_pct'],
+                  'ExtractorSerialExact': m['selected_serial_exact'],
+                  'ExtractorSerialExactPct': m['selected_serial_exact_pct'],
+                  'RawModelExact': m['raw_model_exact'],
+                  'RawModelExactPct': m['raw_model_exact_pct'],
+                  'AverageMs': m['avg_ms'],
+                  'MedianMs': m['median_ms'],
+                  'P95Ms': m['p95_ms'],
+                  'MaxMs': m['max_ms'],
+                  'Errors': m['errors'],
+              })
+
+          # Accuracy dominates. Runtime breaks ties.
+          winner = max(rows, key=lambda r: (
+              r['RawSerialExact'],
+              r['ExtractorSerialExact'],
+              r['RawModelExact'],
+              -r['AverageMs']))
+
+          with open(root / 'Resolution-Comparison.csv', 'w', encoding='utf-8-sig', newline='') as f:
+              w = csv.DictWriter(f, fieldnames=rows[0].keys())
+              w.writeheader(); w.writerows(rows)
+
+          md = [
+              '# Camera Lab OCR Resolution Sweep', '',
+              '| Max side | Raw serial exact | Serial near-1 | Extractor exact | Model exact | Avg ms | Median ms | P95 ms | Errors |',
+              '|---:|---:|---:|---:|---:|---:|---:|---:|---:|'
+          ]
+          for r in rows:
+              md.append(f"| {r['MaxSideLen']} | {r['RawSerialExact']} ({r['RawSerialExactPct']}%) | {r['RawSerialNear1']} ({r['RawSerialNear1Pct']}%) | {r['ExtractorSerialExact']} ({r['ExtractorSerialExactPct']}%) | {r['RawModelExact']} ({r['RawModelExactPct']}%) | {r['AverageMs']} | {r['MedianMs']} | {r['P95Ms']} | {r['Errors']} |")
+          md += ['', f"## Winner: **maxSideLen {winner['MaxSideLen']}**", '',
+                 'Winner selection prioritizes exact raw serial accuracy, then spatial extractor accuracy, then model accuracy, with average runtime as the tie-breaker.']
+          (root / 'Resolution-Comparison.md').write_text('\n'.join(md) + '\n', encoding='utf-8')
+          print('\n'.join(md))
+          '@ | Set-Content compare_resolutions.py -Encoding UTF8
+          python compare_resolutions.py
+          Get-Content resolution-results/Resolution-Comparison.md | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload sweep evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camera-Lab-Resolution-Sweep-${{ github.run_number }}
+          path: |
+            resolution-results/**
+            ${{ env.SWEEP_DIR }}/SweepResults.csv
+            ${{ env.SWEEP_DIR }}/SweepSummary.csv
+            ${{ env.SWEEP_DIR }}/maxSideLen_1024/RapidOCR_Images.csv
+            ${{ env.SWEEP_DIR }}/maxSideLen_1024/RapidOCR_Detections.csv
+            ${{ env.SWEEP_DIR }}/maxSideLen_1600/RapidOCR_Images.csv
+            ${{ env.SWEEP_DIR }}/maxSideLen_1600/RapidOCR_Detections.csv
+            ${{ env.SWEEP_DIR }}/maxSideLen_2048/RapidOCR_Images.csv
+            ${{ env.SWEEP_DIR }}/maxSideLen_2048/RapidOCR_Detections.csv
+          if-no-files-found: warn
+          retention-days: 30
