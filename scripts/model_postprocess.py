@@ -6,20 +6,34 @@ from collections import defaultdict
 def norm(s): return re.sub(r'[^A-Z0-9]','',(s or '').upper())
 
 def correct_anchor_model(man,value,raw_context=''):
-    """Apply only narrow, production-safe OCR corrections to a direct MODEL/MDL read.
+    """Apply narrow, production-safe OCR corrections to a direct MODEL/MDL read.
 
-    Corrections are vendor/family constrained and never consult ground truth.
+    Corrections are vendor/family constrained, require independent label evidence where
+    practical, and never consult the expected regression value.
     """
     m=(man or '').upper(); v=norm(value); raw=(raw_context or '').upper()
+    has256=bool(re.search(r'\b256\s*G(?:B)?\b',raw,re.I))
+    has512=bool(re.search(r'\b512\s*G(?:B)?\b',raw,re.I))
 
     if 'SAMSUNG' in m and re.fullmatch(r'MZVLB512[8H]',v):
         return 'MZVLB512B','Samsung MZVLB terminal 8/H->B'
 
-    if 'INTEL' in m and re.fullmatch(r'SSDPEMKF25[58]G8',v) and re.search(r'\b256\s*GB\b',raw,re.I):
+    if 'INTEL' in m and re.fullmatch(r'SSDPEMKF25[58]G8',v) and has256:
         return 'SSDPEMKF256G8','Intel SSDPEMKF + 256GB evidence'
 
-    if ('KIOXIA' in m or 'TOSHIBA' in m) and v=='KXG80ZNV256G' and re.search(r'\b256\s*G(?:B)?\b',raw,re.I):
-        return 'KXG60ZNV256G','Kioxia XG6 8->6 + 256GB evidence'
+    if 'KIOXIA' in m or 'TOSHIBA' in m:
+        # XG6 256GB labels repeatedly confuse generation/capacity characters.
+        if re.fullmatch(r'KXG[68]0ZNV25[68]G',v) and has256:
+            return 'KXG60ZNV256G','Kioxia XG6 + 256GB family normalization'
+        # XG6 512GB labels may read 6 as 8/B and the printed capacity/model suffix poorly.
+        if re.fullmatch(r'KXG[68B]AZNV[0-9A-Z]{4,8}',v) and has512:
+            return 'KXG6AZNV512G','Kioxia XG6 + 512GB family normalization'
+        # XG5 512GB: ZNV is sometimes read ZNN.
+        if re.fullmatch(r'KXG50ZN[NV]512G',v) and has512:
+            return 'KXG50ZNV512G','Kioxia XG5 ZNN/NV normalization'
+        # KSG 256GB family: 6/8 and 0/A are common OCR substitutions around ZMV.
+        if re.fullmatch(r'KSG[68]?[0A]ZM[VW]25[68]G',v) and has256:
+            return 'KSG60ZMV256G','Kioxia/Toshiba KSG + 256GB family normalization'
 
     if 'WESTERN DIGITAL' in m and re.fullmatch(r'WD[0-9A-Z]+AO',v):
         return v[:-1]+'0','WD terminal O->0'
@@ -61,7 +75,7 @@ def family_candidates(man,blocks):
     elif 'TOSHIBA' in m or 'KIOXIA' in m:
         families=[r'KXG[0-9A-Z]{9}',r'KSG[0-9A-Z]{9}',r'MQ01[A-Z0-9]{6}',r'DT01[A-Z0-9]{6}']
     elif 'WESTERN DIGITAL' in m:
-        families=[r'SDBQNTY[0-9A-Z]{8}',r'WD[0-9A-Z]{13}',r'HTS[0-9A-Z]{11}']
+        families=[r'SDBQNTY[0-9A-Z]{8}',r'WD[0-9A-Z]{13}',r'HTS[0-9A-Z]{12}']
     elif 'MICRON' in m:
         families=[r'MTFDDA[VK][0-9A-Z]{6}']
     elif 'HYNIX' in m:
@@ -73,11 +87,11 @@ def family_candidates(man,blocks):
     elif 'SEAGATE' in m:
         families=[r'ST[0-9]{4}LM[0-9]{3}',r'ST[0-9]{4}DM[0-9]{3}',r'ST[0-9]{8}AS']
     elif 'HGST' in m or 'HITACHI' in m:
-        families=[r'HTS[0-9A-Z]{11}']
+        families=[r'HTS[0-9A-Z]{12}']
     elif 'FUJITSU' in m:
         families=[r'MHV[0-9A-Z]{8}']
     elif 'CRUCIAL' in m:
-        families=[r'CT[0-9]{3,4}MX[0-9A-Z]{6}']
+        families=[r'CT[0-9]{3,4}MX[0-9A-Z]{7}']
 
     for b in blocks:
         t=norm(b.get('Text') or '')
@@ -105,6 +119,8 @@ def family_candidates(man,blocks):
         elif re.search(r'\b512\s*G(?:B)?\b',raw,re.I): cap='512'
         if ('XG6' in raw.upper() or 'KXG8' in nr or 'KXG6' in nr) and cap=='256' and ('ZNV' in nr or 'ZNN' in nr):
             add(180,'KXG60ZNV256G','Kioxia XG6 + 256GB repeated evidence')
+        if ('XG6' in raw.upper() or 'KXG8AZNV' in nr or 'KXG6AZNV' in nr or 'KXGBAZNV' in nr) and cap=='512':
+            add(180,'KXG6AZNV512G','Kioxia XG6 + 512GB repeated evidence')
         if ('XG5' in raw.upper() or 'KXG5AZNV' in nr or 'KXG50ZNN' in nr) and cap=='512':
             add(180,'KXG50ZNV512G','Kioxia XG5 + 512GB regulatory evidence')
         if ('KSG60ZMV' in nr or 'KSG8AZM' in nr or 'KSG6AZM' in nr) and cap=='256':
