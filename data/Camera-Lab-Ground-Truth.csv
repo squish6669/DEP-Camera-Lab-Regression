@@ -1,0 +1,69 @@
+Image,ExpectedDriveType,ExpectedManufacturer,ExpectedModel,ExpectedSerial,ExpectedCapacity,ExpectedCT,Verified,VerificationNotes
+WIN_20260821_09_40_42_Pro.jpg,M.2 SATA,Toshiba / Kioxia,KSG60ZMV256G,389B72P7K5SP,256 GB,,YES,Visual verification from source photo
+WIN_20260821_10_36_09_Pro.jpg,M.2 NVMe,Intel,SSDPEMKF256G8,BTHP9254095P256B,256 GB,,YES,Visual verification from source photo
+WIN_20260821_10_37_10_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG60ZNV256G,310C25DWE1M2,256 GB,,YES,Visual verification from source photo
+WIN_20260821_10_37_47_Pro.jpg,M.2 NVMe,Samsung,MZ-VLB512B,S4ENNFIN358968,512 GB,,YES,Visual verification from source photo
+WIN_20260821_10_38_19_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG6AZNV512G,Y01F7430FPV1,512 GB,,YES,Visual verification from source photo
+WIN_20260821_10_38_50_Pro.jpg,M.2 NVMe,Western Digital,SDBQNTY-512G-1001,20242D803822,512 GB,,YES,Visual verification from source photo
+WIN_20260821_10_43_43_Pro.jpg,M.2 NVMe,Western Digital,SDBQNTY-512G-1001,20242D803822,512 GB,,YES,Visual verification from source photo
+WIN_20260821_10_44_29_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG6AZNV512G,Y01F7430FPV1,512 GB,,YES,Visual verification from source photo
+WIN_20260821_10_45_24_Pro.jpg,M.2 NVMe,Samsung,MZ-VLB512B,S4ENNFIN358968,512 GB,,YES,Visual verification from source photo
+WIN_20260821_10_45_55_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG60ZNV256G,310C25DWE1M2,256 GB,,YES,Visual verification from source photo
+WIN_20260821_10_46_23_Pro.jpg,M.2 NVMe,Intel,SSDPEMKF256G8,BTHP9254095P256B,256 GB,,YES,Visual verification from source photo
+WIN_20260821_10_54_31_Pro.jpg,M.2 NVMe,Intel,SSDPEMKF256G8,BTHP9254095P256B,256 GB,,YES,Visual verification from source photo
+WIN_20260821_10_55_05_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG60ZNV256G,310C25DWE1M2,256 GB,,YES,Visual verification from source photo
+WIN_20260821_10_56_17_Pro.jpg,M.2 NVMe,Samsung,MZ-VLB512B,S4ENNFIN358968,512 GB,,YES,Visual verification from source photo
+WIN_20260821_10_56_48_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG6AZNV512G,Y01F7430FPV1,512 GB,,YES,Visual verification from source photo
+WIN_20260821_10_57_17_Pro.jpg,M.2 NVMe,Western Digital,SDBQNTY-512G-1001,20242D803822,512 GB,,YES,Visual verification from source photo
+WIN_20260821_10_57_43_Pro.jpg,M.2 NVMe,Western Digital,SDBQNTY-512G-1001,20242D803822,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_09_34_Pro.jpg,M.2 NVMe,Western Digital,SDBQNTY-512G-1001,20242D803822,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_10_14_Pro.jpg,M.2 NVMe,Samsung,MZ-VLB512B,S4ENNFIN358968,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_10_46_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG6AZNV512G,Y01F7430FPV1,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_11_16_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG60ZNV256G,310C25DWE1M2,256 GB,,YES,Visual verification from source photo
+WIN_20260821_11_11_49_Pro.jpg,M.2 NVMe,Intel,SSDPEMKF256G8,BTHP9254095P256B,256 GB,,YES,Visual verification from source photo
+WIN_20260821_11_15_16_Pro.jpg,M.2 NVMe,Intel,SSDPEMKF256G8,BTHP9254095P256B,256 GB,,YES,Visual verification from source photo
+WIN_20260821_11_15_50_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG60ZNV256G,310C25DWE1M2,256 GB,,YES,Visual verification from source photo
+WIN_20260821_11_16_16_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG6AZNV512G,Y01F7430FPV1,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_16_46_Pro.jpg,M.2 NVMe,Samsung,MZ-VLB512B,S4ENNFIN358968,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_17_23_Pro.jpg,M.2 NVMe,Western Digital,SDBQNTY-512G-1001,20242D803822,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_23_03_Pro.jpg,M.2 SATA,Micron,MTFDDAV256TBN,,256 GB,,YES,"Visual verification; no clearly printed S/N field, serial intentionally unscored"
+WIN_20260821_11_23_38_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG50ZNV512G,X7JB5ZW0KQJS,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_24_06_Pro.jpg,M.2 NVMe,Toshiba / Kioxia,KXG50ZNV512G,78HF7Q9VF6HS,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_24_36_Pro.jpg,M.2 NVMe,SK hynix,,E182N032210302H45,512 GB,,YES,Visual verification; model left unscored because small suffix is not fully legible
+WIN_20260821_11_25_37_Pro.jpg,M.2 NVMe,SK hynix,HFM512GDJTNG-8310A,NJ96N410610506K20,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_26_04_Pro.jpg,M.2 NVMe,Samsung,MZ-VLB5120,S3WTNX1M185912,512 GB,UHKUC0166BV14X,YES,Visual verification from source photo
+WIN_20260821_11_26_28_Pro.jpg,M.2 NVMe,Intel,SSDPEKNU512GZH,PHKA203404F6512A,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_26_53_Pro.jpg,M.2 NVMe,Intel,SSDPEKNW512G8H,BTNH93360H11512A,512 GB,,YES,Visual verification from source photo
+WIN_20260821_11_27_20_Pro.jpg,M.2 SATA,SanDisk,SD6SP1M-128G-1012,134929400549,128 GB,,YES,Visual verification from source photo
+WIN_20260821_11_28_32_Pro.jpg,M.2 SATA,Lite-On,LJT-128L6G-11,,128 GB,,YES,"Visual verification; no clear S/N field visible, serial intentionally unscored"
+WIN_20260821_11_29_03_Pro.jpg,M.2 NVMe,Samsung,MZ-VLB5120,S3WTNX0M111526,512 GB,UHKUC0166BRLEK,YES,Visual verification from source photo
+WIN_20260821_11_29_37_Pro.jpg,M.2 SATA,Lite-On,LJT-128L6G-11,,128 GB,,YES,"Visual verification; no clear S/N field visible, serial intentionally unscored"
+WIN_20260821_11_30_05_Pro.jpg,M.2 SATA,SanDisk,SD6SP1M-128G-1012,134931401105,128 GB,,YES,Visual verification from source photo
+WIN_20260821_11_30_37_Pro.jpg,M.2 SATA,Micron,MTFDDAV256TBN,,256 GB,,YES,"Visual verification; no clearly printed S/N field, serial intentionally unscored"
+WIN_20260826_12_54_29_Pro.jpg,M.2 SATA,Toshiba / Kioxia,KSG60ZMV256G,389B72P7K5SP,256 GB,,YES,Visual verification from source photo
+WIN_20260826_13_45_31_Pro.jpg,2.5 SATA HDD,Toshiba,MQ01ACF050,9616C8UZT,500 GB,,YES,Visual verification from source photo
+WIN_20260826_13_47_43_Pro.jpg,M.2 NVMe,Samsung,MZ-VLB512B,S4ENNFIN358968,512 GB,,YES,Visual verification from source photo
+WIN_20260826_13_48_19_Pro.jpg,2.5 SATA HDD,Toshiba,MQ01ACF050,9616C8UZT,500 GB,,YES,Visual verification from source photo
+WIN_20260826_13_49_10_Pro.jpg,3.5 SATA HDD,Seagate,ST31000528AS,9VP0ABFG,1 TB,,YES,Visual verification from source photo
+WIN_20260826_13_50_01_Pro.jpg,3.5 SATA HDD,Seagate,ST1500DM003,Z1E0Q8V8,1500 GB,,YES,Visual verification from source photo
+WIN_20260826_14_22_18_Pro.jpg,3.5 SATA HDD,Toshiba,DT01ACA100,1489KKAMS,1 TB,,YES,Visual verification from source photo
+WIN_20260826_14_22_32_Pro.jpg,3.5 SATA HDD,Western Digital,WD10EZEX-75ZF5A0,WMC1S1780940,1 TB,,YES,Visual verification from source photo
+WIN_20260826_14_22_41_Pro.jpg,3.5 SATA HDD,Western Digital,WD10EZEX-75WN4A0,WCC6Y6ZC6771,1 TB,,YES,Visual verification from source photo
+WIN_20260826_14_23_20_Pro.jpg,2.5 SATA HDD,Toshiba,MQ01ACF050,9616C8UZT,500 GB,,YES,Visual verification from source photo
+WIN_20260826_14_23_36_Pro.jpg,2.5 SATA HDD,Seagate,ST500LM021,W628R2JE,500 GB,,YES,Visual verification from source photo
+WIN_20260826_14_23_50_Pro.jpg,2.5 SATA HDD,HGST / Hitachi,HTS545050A7E680,5G07JBPR,500 GB,,YES,Visual verification from source photo
+WIN_20260826_14_23_59_Pro.jpg,2.5 SATA HDD,HGST / Hitachi,HTS723232A7A364,110530E3834563HLPTEN,320 GB,2BQGF01F30R2XE,YES,Visual verification from source photo
+WIN_20260826_14_24_32_Pro.jpg,2.5 SSD,Micron,MTFDDAK256TBN,18151C0F9F97,256 GB,,YES,Visual verification from source photo
+WIN_20260826_14_24_45_Pro.jpg,2.5 SSD,Samsung,,S0TYN6AC513463,128 GB,,YES,Visual verification; model intentionally left unscored
+WIN_20260826_14_25_05_Pro.jpg,2.5 SSD,Samsung,MZ7TE128HMGR-000H1,S1BDNSAG400782,128 GB,,YES,Visual verification from source photo
+WIN_20260826_14_25_20_Pro.jpg,2.5 SATA HDD,Fujitsu,MHV2120BH PL,NW97T6A29BW,120 GB,,YES,Visual verification from source photo
+WIN_20260826_14_25_29_Pro.jpg,2.5 SATA HDD,HGST / Hitachi,HTS725050A7E630,160930RC250A1T0V5LHT,500 GB,2FJHV01GW450WZ,YES,Visual verification from source photo
+WIN_20260826_14_25_42_Pro.jpg,2.5 SATA HDD,HGST / Hitachi,HTS725050A7E630,131112TF0500Y92ZH8NL,500 GB,2DGXE01DN5P8TG,YES,Visual verification from source photo
+WIN_20260826_14_25_50_Pro.jpg,2.5 SATA HDD,Western Digital,HTS721010A9E630,190219JR1004BDGSNDPM,1 TB,2FJJD01F3BY633,YES,Visual verification from source photo
+WIN_20260826_14_26_06_Pro.jpg,2.5 SATA HDD,Seagate,ST1000LM014,W381VX2B,1 TB,,YES,Visual verification from source photo
+WIN_20260826_14_26_26_Pro.jpg,2.5 SATA HDD,Toshiba,MQ01ACF050,298NTLGXT,500 GB,2FCGQ0ASKBWF0Z,YES,Visual verification from source photo
+WIN_20260826_14_26_38_Pro.jpg,2.5 SSD,Micron,MTFDDAK512TBN,,512 GB,,YES,"Visual verification; no clearly printed S/N field, serial intentionally unscored"
+WIN_20260826_14_26_46_Pro.jpg,2.5 SSD,Samsung,MZ-7PD128M,S1MBNYAH312675,128 GB,,YES,Visual verification from source photo
+WIN_20260826_14_26_55_Pro.jpg,2.5 SSD,Lite-On,LCH-256V2S-HP,002518134073,256 GB,UFAVP01PJ8NAHZ,YES,Visual verification from source photo
+WIN_20260826_14_27_04_Pro.jpg,2.5 SSD,Samsung,MZ-75E500,S2RANB0HB21027T,500 GB,,YES,Visual verification from source photo
+WIN_20260826_14_27_13_Pro.jpg,2.5 SSD,Crucial,CT500MX500SSD1,2104E4EDB83E,500 GB,,YES,Visual verification from source photo
