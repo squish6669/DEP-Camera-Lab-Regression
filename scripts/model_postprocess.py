@@ -14,8 +14,7 @@ def model_labeled_tokens(blocks):
         if m:
             v=norm(m.group(1))
             if 6<=len(v)<=24:
-                bonus=22 if source=='targeted' else 0
-                out.append((140+conf*10+bonus,v,f'{source}-model-anchor:'+txt))
+                out.append((140+conf*10,v,f'{source}-model-anchor:'+txt))
     return out
 
 def full_raw(blocks):
@@ -57,9 +56,8 @@ def family_candidates(man,blocks):
     for b in blocks:
         t=norm(b.get('Text') or '')
         src=b.get('_Source','full')
-        base=150 if src=='targeted' else 130
         for pat in families:
-            for mm in re.finditer(pat,t): add(base,mm.group(0),f'{src}-vendor-family')
+            for mm in re.finditer(pat,t): add(130,mm.group(0),f'{src}-vendor-family')
 
     if 'SANDISK' in m:
         if 'SD6SP1M1' in nr and '128G1012' in nr:
@@ -116,21 +114,23 @@ def load_det(path,source):
     return d
 
 def choose_candidate(man,full_blocks,targeted_blocks):
-    """Targeted OCR is supplemental: never let a merely noisy crop displace the full-label baseline.
+    """Keep targeted OCR supplemental and non-destructive.
 
-    A targeted reread may override only when the combined evidence produces a high-confidence
-    vendor/capacity recovery (score >=170) that is strictly stronger than the baseline. This keeps
-    ordinary targeted model anchors/family fragments from replacing already-good full-label reads.
+    The full-label pass is the baseline. A targeted crop can corroborate the same
+    model, or fill a row only when the full-label pass yields no usable candidate.
+    It cannot replace a different full-label candidate. This prevents noisy crop
+    OCR from regressing already-correct model reads.
     """
     base=family_candidates(man,full_blocks)
-    combined=family_candidates(man,full_blocks+targeted_blocks)
-    if not base:
-        return (combined[0] if combined else None),'targeted-fallback'
-    chosen=base[0]
-    strong=[c for c in combined if c[0]>=170]
-    if strong and strong[0][0]>chosen[0]:
-        return strong[0],'strong-targeted-recovery'
-    return chosen,'preserve-full-baseline'
+    target=family_candidates(man,targeted_blocks)
+    if base:
+        chosen=base[0]
+        if any(c[1]==chosen[1] for c in target):
+            return chosen,'targeted-corroborates-full'
+        return chosen,'preserve-full-baseline'
+    if target:
+        return target[0],'targeted-fills-empty-baseline'
+    return None,'no-model-candidate'
 
 def main():
     ap=argparse.ArgumentParser()
@@ -144,11 +144,12 @@ def main():
     rows=[]
     for g in gt:
         exp=norm(g.get('ExpectedModel')); fn=g['Image']; man=g.get('ExpectedManufacturer','')
-        pick,decision=choose_candidate(man,full.get(fn,[]),targeted.get(fn,[]))
+        full_blocks=full.get(fn,[]); target_blocks=targeted.get(fn,[])
+        pick,decision=choose_candidate(man,full_blocks,target_blocks)
         selected=pick[1] if pick else ''; reason=(decision+':'+pick[2]) if pick else decision
-        rawn=norm(full_raw(full.get(fn,[])))
+        rawn=norm(full_raw(full_blocks))
         raw_exact=bool(exp and exp in rawn)
-        combined=family_candidates(man,full.get(fn,[])+targeted.get(fn,[]))
+        combined=family_candidates(man,full_blocks+target_blocks)
         rows.append({'Image':fn,'Manufacturer':man,'ExpectedModel':exp,'SelectedModel':selected,'RawExact':raw_exact,'SelectedExact':bool(exp and selected==exp),'Reason':reason,'TopCandidates':' | '.join(c for _,c,_ in combined[:6])})
     model=[r for r in rows if r['ExpectedModel']]
     metrics={'model_n':len(model),'raw_exact':sum(r['RawExact'] for r in model),'selected_exact':sum(r['SelectedExact'] for r in model)}
