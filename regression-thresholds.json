@@ -1,0 +1,10 @@
+{
+  "minimums": {
+    "raw_serial_exact": 34,
+    "raw_serial_near1": 53,
+    "raw_model_exact": 49
+  },
+  "maximums": {
+    "errors": 0
+  }
+}
