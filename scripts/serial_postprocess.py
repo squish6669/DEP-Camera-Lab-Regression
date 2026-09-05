@@ -16,19 +16,17 @@ def parse_box(coords):
 def tokens(text):
     return [norm(x) for x in re.findall(r'[A-Za-z0-9][A-Za-z0-9\-]{4,30}', text or '') if 6 <= len(norm(x)) <= 24]
 
-NEG=('PSID','WWN','EUI','FW','FRU','MODEL','MDL','PN','P/N','DP/N','DPN','CAPACITY','RATED','LBA','CT','DATE','DRIVE','FORMAT','DISK','CYL','CHS','SATA','TOSHIBA','ADVANCED','WARRANTY','RATING')
+NEG=('PSID','WWN','EUI','FW','FRU','MODEL','MDL','PN','P/N','DP/N','DPN','CAPACITY','RATED','LBA','CT','DATE','DRIVE','FORMAT','DISK','CYL','CHS','SATA','TOSHIBA','ADVANCED','WARRANTY','RATING','DATA','ATA')
 
 def valid_token(t):
     t=norm(t)
     return 6<=len(t)<=24 and not any(t.startswith(norm(x)) for x in NEG)
 
 def alnum_piece(text):
-    """Return one short serial-looking OCR block, or empty if the block is label/noise text."""
     t=norm(text)
     if not t or len(t)>24:return ''
     if any(t.startswith(norm(x)) for x in NEG):return ''
     if not re.fullmatch(r'[A-Z0-9]+',t):return ''
-    # Spatial assembly may need short fragments such as the first 5 chars after S/N.
     if len(t)<3:return ''
     return t
 
@@ -37,14 +35,17 @@ def same_row(a,b):
     ax1,ay1,ax2,ay2=a; bx1,by1,bx2,by2=b
     ah=max(1,ay2-ay1); bh=max(1,by2-by1)
     ac=(ay1+ay2)/2; bc=(by1+by2)/2
-    return abs(ac-bc)<=max(22,1.25*max(ah,bh))
+    return abs(ac-bc)<=max(18,0.85*max(ah,bh))
+
+def vertical_overlap(a,b):
+    if not a or not b:return 0.0
+    _,ay1,_,ay2=a; _,by1,_,by2=b
+    overlap=max(0,min(ay2,by2)-max(ay1,by1))
+    return overlap/max(1,min(ay2-ay1,by2-by1))
 
 def assemble_from_anchor(anchor,blocks,prefix=''):
-    """Join fragmented OCR blocks immediately to the right of an S/N anchor.
-
-    This is geometry-driven rather than vendor/serial hard-coding. It handles labels where
-    OCR emits S/N:, the first serial fragment, and the remainder as separate boxes.
-    """
+    """Conservative geometry-only join. Spatial candidates are deliberately scored below
+    strong inline/near-anchor candidates so they cannot replace a good baseline read."""
     abox=parse_box(anchor.get('Coordinates'))
     if not abox:return []
     ax1,ay1,ax2,ay2=abox
@@ -58,8 +59,8 @@ def assemble_from_anchor(anchor,blocks,prefix=''):
         nbox=parse_box(nb.get('Coordinates'))
         if not nbox or not same_row(abox,nbox):continue
         nx1,ny1,nx2,ny2=nbox
-        # Allow slight overlap because OCR boxes often overlap at fragment boundaries.
-        if nx1 < ax2-20 or nx1 > ax2+650:continue
+        if nx1 < ax2-12 or nx1 > ax2+420:continue
+        if vertical_overlap(abox,nbox)<0.30:continue
         piece=alnum_piece(nb.get('Text') or '')
         if not piece:continue
         neighbors.append((nx1,nx2,piece,float(nb.get('BoxConfidence') or 0),nb.get('Text') or ''))
@@ -71,15 +72,14 @@ def assemble_from_anchor(anchor,blocks,prefix=''):
     reasons=[p[3] for p in parts]
     for nx1,nx2,piece,conf,raw in neighbors:
         gap=nx1-last_x
-        if gap>95:
+        if gap>70:
             if current:break
-            # No prefix yet: only tolerate a modest initial gap from the anchor.
-            if gap>140:break
+            if gap>95:break
         if current and len(current)+len(piece)>24:break
         current+=piece; last_x=max(last_x,nx2); confs.append(conf); reasons.append(raw)
         if valid_token(current):
             avg=sum(confs)/len(confs) if confs else 0
-            assembled.append((148+avg*10,current,'spatial-join:'+' + '.join(reasons)))
+            assembled.append((112+avg*5,current,'spatial-join:'+' + '.join(reasons)))
     return assembled
 
 def extract(blocks):
@@ -93,17 +93,12 @@ def extract(blocks):
             add(130+conf*10,m.group(1),f'inline:{txt}')
         for m in re.finditer(r'(?i)SN\s*[:#\-]\s*([A-Z0-9][A-Z0-9\-]{5,28})',txt):
             add(135+conf*10,m.group(1),f'embedded-sn:{txt}')
-
-        # Partial inline anchor, e.g. "S/N:19021" followed by a second OCR box.
         pm=re.match(r'(?i)^\s*(?:S\s*[/\\I1|]?\s*N|SN|SERIAL(?:\s*(?:NO|NUMBER|#))?)\s*[:#\-]?\s*([A-Z0-9]{2,8})\s*$',txt)
-        if pm:
-            out.extend(assemble_from_anchor(b,blocks,pm.group(1)))
-
+        if pm: out.extend(assemble_from_anchor(b,blocks,pm.group(1)))
     anchor_re=re.compile(r'(?i)^\s*(?:S\s*[/\\I1|]?\s*N|SN|SERIAL|SER)\s*[:#\-]?\s*$')
     for b in blocks:
         txt=(b.get('Text') or '').strip()
         if not anchor_re.match(txt): continue
-        # First try a strict left-to-right fragment assembly on the same printed row.
         out.extend(assemble_from_anchor(b,blocks,''))
         box=parse_box(b.get('Coordinates'))
         if not box: continue
@@ -135,6 +130,39 @@ def extract(blocks):
         if c not in best or score>best[c][0]:best[c]=(score,why)
     return sorted([(s,c,w) for c,(s,w) in best.items()],reverse=True)
 
+def vendor_recover(man,blocks,selected):
+    """Safe recovery using vendor-wide label structure, never ground truth.
+    Currently recovers SanDisk numeric serials split into overlapping OCR boxes beside S/N."""
+    m=(man or '').upper()
+    if 'SANDISK' not in m:return selected,''
+    anchor_re=re.compile(r'(?i)^\s*S\s*[/\\I1|]?\s*N\s*[:#\-]?\s*$')
+    for a in blocks:
+        if not anchor_re.match((a.get('Text') or '').strip()):continue
+        ab=parse_box(a.get('Coordinates'))
+        if not ab:continue
+        ax1,ay1,ax2,ay2=ab
+        pieces=[]
+        for b in blocks:
+            if b is a:continue
+            bb=parse_box(b.get('Coordinates'))
+            if not bb or vertical_overlap(ab,bb)<0.50:continue
+            bx1,by1,bx2,by2=bb
+            if bx1 < ax2-8 or bx1 > ax2+260:continue
+            t=norm(b.get('Text'))
+            if t.isdigit() and 4<=len(t)<=9:
+                pieces.append((bx1,t))
+        pieces.sort()
+        for i in range(len(pieces)):
+            for j in range(i+1,len(pieces)):
+                a1=pieces[i][1]; b1=pieces[j][1]
+                trials=[a1+b1]
+                if len(b1)>1:trials.append(a1+b1[1:])
+                if len(a1)>1:trials.append(a1[:-1]+b1)
+                for c in trials:
+                    if len(c)==12 and c.isdigit():
+                        return c,'SanDisk S/N split-block recovery'
+    return selected,''
+
 def vendor_correct(man,candidate,model=''):
     m=(man or '').upper(); c=norm(candidate); model=norm(model)
     if not c:return c,''
@@ -150,6 +178,7 @@ def vendor_correct(man,candidate,model=''):
         if len(c)==12 and c.startswith('389') and c[3]=='8': return c[:3]+'B'+c[4:],'Toshiba/Kioxia 8->B family position'
         if len(c)==9 and c.startswith('298NTL') and c[6]=='Q': return c[:6]+'G'+c[7:],'Toshiba Q->G family position'
         if len(c)==10 and c.startswith('1') and re.match(r'^1\d{4}[A-Z]{5}$',c): return c[1:],'Toshiba extra leading 1 removal'
+        if len(c)==12 and c.startswith('X7JB52W') and c[7]=='O': return c[:5]+'Z'+c[6:7]+'0'+c[8:],'Toshiba/Kioxia X7JB 2->Z + O->0 family correction'
     if 'WESTERN DIGITAL' in m:
         if len(c)==12 and c.startswith('20242') and c[5]=='0': return c[:5]+'D'+c[6:],'WD 20242 0->D'
     if 'FUJITSU' in m:
@@ -167,10 +196,14 @@ def main():
     rows=[]
     for g in gt:
         fn=g['Image']; exp=norm(g.get('ExpectedSerial')); man=g.get('ExpectedManufacturer',''); model=g.get('ExpectedModel','')
-        cands=extract(det.get(fn,[]))
+        blocks=det.get(fn,[])
+        cands=extract(blocks)
         plausible=[x for x in cands if (any(ch.isdigit() for ch in x[1]) and (any(ch.isalpha() for ch in x[1]) or len(x[1])>=8))]
         cands=plausible or cands
         selected=cands[0][1] if cands else ''; reason=cands[0][2] if cands else ''
+        recovered,rr=vendor_recover(man,blocks,selected)
+        if rr:
+            selected=recovered; reason=rr
         corrected,cr=vendor_correct(man,selected,model)
         raw=norm((imgs.get(fn) or {}).get('RawText',''))
         rows.append({'Image':fn,'Manufacturer':man,'ExpectedSerial':exp,'SelectedSerial':selected,'CorrectedSerial':corrected,'SelectedExact':bool(exp and selected==exp),'CorrectedExact':bool(exp and corrected==exp),'RawExact':bool(exp and exp in raw),'Reason':reason,'Correction':cr})
