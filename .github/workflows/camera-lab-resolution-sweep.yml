@@ -1,4 +1,4 @@
-# Regression sweep: bounded model-family validation
+# Regression sweep: full-label OCR plus targeted model-region reread
 name: Camera Lab OCR Resolution Sweep
 
 on:
@@ -57,7 +57,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path sweep-publish/models | Out-Null
           Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* sweep-publish/models -Recurse -Force
 
-      - name: Run 1024 vs 1600 vs 2048 sweep
+      - name: Run 1024 vs 1600 vs 2048 full-label sweep
         shell: pwsh
         run: |
           & .\sweep-publish\DriveLabelSweep.exe "$env:IMAGE_DIR" "1024,1600,2048"
@@ -70,6 +70,25 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Build targeted model crops from 2048 detections
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pillow
+          python scripts/model_target_crop.py --images "$env:IMAGE_DIR" --detections "$env:SWEEP_DIR\maxSideLen_2048\RapidOCR_Detections.csv" --out-dir targeted-model-crops
+          if ($LASTEXITCODE -ne 0) { throw "Targeted crop generation failed" }
+          $crops = @(Get-ChildItem targeted-model-crops -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($crops.Count -lt 1) { throw "No targeted model crops were created" }
+          Write-Host "Targeted model crops: $($crops.Count)"
+
+      - name: Reread targeted model regions at 2048
+        shell: pwsh
+        run: |
+          & .\sweep-publish\DriveLabelSweep.exe "targeted-model-crops" "2048"
+          if ($LASTEXITCODE -ne 0) { throw "Targeted model reread exited with code $LASTEXITCODE" }
+          $result = Get-ChildItem "targeted-model-crops" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$result) { throw "Targeted model reread output not found" }
+          "TARGET_SWEEP_DIR=$($result.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Score each resolution
         shell: pwsh
@@ -88,7 +107,11 @@ jobs:
 
             $model = "resolution-results\$len-model"
             New-Item -ItemType Directory -Force -Path $model | Out-Null
-            python scripts/model_postprocess.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$setting\RapidOCR_Detections.csv" --out-dir $model
+            if ($len -eq 2048) {
+              python scripts/model_postprocess.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$setting\RapidOCR_Detections.csv" --targeted-detections "$env:TARGET_SWEEP_DIR\maxSideLen_2048\RapidOCR_Detections.csv" --out-dir $model
+            } else {
+              python scripts/model_postprocess.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$setting\RapidOCR_Detections.csv" --out-dir $model
+            }
             if ($LASTEXITCODE -ne 0) { throw "Model postprocess failed for maxSideLen=$len" }
           }
 
@@ -135,6 +158,10 @@ jobs:
           name: Camera-Lab-Resolution-Sweep-${{ github.run_number }}
           path: |
             resolution-results/**
+            targeted-model-crops/Targeted-Crops.csv
+            ${{ env:TARGET_SWEEP_DIR }}/SweepResults.csv
+            ${{ env:TARGET_SWEEP_DIR }}/maxSideLen_2048/RapidOCR_Images.csv
+            ${{ env:TARGET_SWEEP_DIR }}/maxSideLen_2048/RapidOCR_Detections.csv
             ${{ env.SWEEP_DIR }}/SweepResults.csv
             ${{ env.SWEEP_DIR }}/SweepSummary.csv
             ${{ env.SWEEP_DIR }}/maxSideLen_1024/RapidOCR_Images.csv
