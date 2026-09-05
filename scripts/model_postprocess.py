@@ -10,11 +10,11 @@ def model_labeled_tokens(blocks):
         txt=(b.get('Text') or '').strip()
         conf=float(b.get('BoxConfidence') or 0)
         source=b.get('_Source','full')
-        m=re.search(r'(?i)\b(?:MODEL|MDL|MODE[1ILU])(?:\s*\([^)]*\))?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\- ]{4,32})',txt)
+        m=re.search(r'(?i)\b(?:MODEL|MDL|MODE[1ILU])(?:\s*\([^)]*\))?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\-]{4,24})',txt)
         if m:
             v=norm(m.group(1))
             if 6<=len(v)<=24:
-                out.append((140+conf*10,v,f'{source}-model-anchor:'+txt))
+                out.append((145+conf*10,v,f'{source}-model-anchor:'+txt))
     return out
 
 def full_raw(blocks):
@@ -29,76 +29,77 @@ def family_candidates(man,blocks):
 
     families=[]
     if 'SAMSUNG' in m:
-        families=[r'MZVLB[0-9A-Z]{4,10}',r'MZ7[A-Z0-9]{6,18}',r'MZ75E[0-9A-Z]{3,12}']
+        families=[r'MZVLB[0-9A-Z]{4}',r'MZ75E[0-9A-Z]{3}',r'MZ7PD[0-9A-Z]{4}',r'MZ7TE[0-9A-Z]{11}']
     elif 'INTEL' in m:
-        families=[r'SSDPEM[A-Z0-9]{6,16}',r'SSDPEK[A-Z0-9]{6,16}']
+        families=[r'SSDPEMKF[0-9A-Z]{5}',r'SSDPEKN[UW][0-9A-Z]{6}']
     elif 'TOSHIBA' in m or 'KIOXIA' in m:
-        families=[r'KXG[0-9A-Z]{8,16}',r'KSG[0-9A-Z]{8,16}',r'MQ01[A-Z0-9]{5,12}',r'DT01[A-Z0-9]{5,12}']
+        families=[r'KXG[0-9A-Z]{9}',r'KSG[0-9A-Z]{9}',r'MQ01[A-Z0-9]{6}',r'DT01[A-Z0-9]{6}']
     elif 'WESTERN DIGITAL' in m:
-        families=[r'SDBQNTY[0-9A-Z]{5,16}',r'WD[0-9A-Z]{8,18}',r'HTS[0-9A-Z]{8,18}']
+        families=[r'SDBQNTY[0-9A-Z]{8}',r'WD[0-9A-Z]{13}',r'HTS[0-9A-Z]{11}']
     elif 'MICRON' in m:
-        families=[r'MTFDDA[A-Z0-9]{6,16}']
+        families=[r'MTFDDA[VK][0-9A-Z]{6}']
     elif 'HYNIX' in m:
-        families=[r'HFM[0-9A-Z]{8,20}']
+        families=[r'HFM[0-9A-Z]{14}']
     elif 'SANDISK' in m:
-        families=[r'SD6SP1M[0-9A-Z]{4,16}']
+        families=[r'SD6SP1M[0-9A-Z]{8}']
     elif 'LITE' in m:
-        families=[r'LJT[0-9A-Z]{6,16}',r'LCH[0-9A-Z]{6,16}']
+        families=[r'LJT[0-9A-Z]{8}',r'LCH[0-9A-Z]{8}']
     elif 'SEAGATE' in m:
-        families=[r'ST[0-9]{3,5}[A-Z0-9]{4,12}']
+        families=[r'ST[0-9]{4}LM[0-9]{3}',r'ST[0-9]{4}DM[0-9]{3}',r'ST[0-9]{8}AS']
     elif 'HGST' in m or 'HITACHI' in m:
-        families=[r'HTS[0-9A-Z]{8,18}']
+        families=[r'HTS[0-9A-Z]{11}']
     elif 'FUJITSU' in m:
-        families=[r'MHV[0-9A-Z]{6,16}']
+        families=[r'MHV[0-9A-Z]{8}']
     elif 'CRUCIAL' in m:
-        families=[r'CT[0-9]{3,4}MX[0-9A-Z]{5,12}']
+        families=[r'CT[0-9]{3,4}MX[0-9A-Z]{6}']
 
     for b in blocks:
         t=norm(b.get('Text') or '')
         src=b.get('_Source','full')
+        base=160 if src=='full' else 150
         for pat in families:
-            for mm in re.finditer(pat,t): add(130,mm.group(0),f'{src}-vendor-family')
+            for mm in re.finditer(pat,t): add(base,mm.group(0),f'{src}-bounded-vendor-family')
 
     if 'SANDISK' in m:
         if 'SD6SP1M1' in nr and '128G1012' in nr:
-            add(170,'SD6SP1M128G1012','SanDisk split model join')
+            add(175,'SD6SP1M128G1012','SanDisk split model join')
         elif 'SD6SP1M' in nr and 'X110' in nr and ('128G' in nr or re.search(r'\b128\s*GB\b',raw,re.I)):
-            add(160,'SD6SP1M128G1012','SanDisk X110 + 128GB family recovery')
+            add(170,'SD6SP1M128G1012','SanDisk X110 + 128GB family recovery')
 
     if 'LITE' in m and re.search(r'LJT\s*[- ]?128L[68]G',raw,re.I) and re.search(r'\b128\s*GB\b',raw,re.I):
         suffix='11' if re.search(r'[- ]11\b',raw) else ''
-        add(170,'LJT128L6G'+suffix,'Lite-On 128GB + L6G family recovery')
+        add(175,'LJT128L6G'+suffix,'Lite-On 128GB + L6G family recovery')
 
     if 'FUJITSU' in m and re.search(r'MHV2120[8B]H\s*PL',raw,re.I):
-        add(170,'MHV2120BHPL','Fujitsu split model + 8/B correction')
+        add(175,'MHV2120BHPL','Fujitsu split model + 8/B correction')
 
     if 'TOSHIBA' in m or 'KIOXIA' in m:
         cap=''
         if re.search(r'\b256\s*G(?:B)?\b',raw,re.I): cap='256'
         elif re.search(r'\b512\s*G(?:B)?\b',raw,re.I): cap='512'
         if ('XG6' in raw.upper() or 'KXG8' in nr or 'KXG6' in nr) and cap=='256' and ('ZNV' in nr or 'ZNN' in nr):
-            add(175,'KXG60ZNV256G','Kioxia XG6 + 256GB repeated evidence')
-        if ('XG5' in raw.upper() or 'KXG5AZNV' in nr) and cap=='512':
-            add(175,'KXG50ZNV512G','Kioxia XG5 + 512GB regulatory evidence')
-        if ('KSG60ZMV' in nr or 'KSG8AZM' in nr) and cap=='256':
-            add(175,'KSG60ZMV256G','Kioxia/Toshiba KSG + 256GB evidence')
+            add(180,'KXG60ZNV256G','Kioxia XG6 + 256GB repeated evidence')
+        if ('XG5' in raw.upper() or 'KXG5AZNV' in nr or 'KXG50ZNN' in nr) and cap=='512':
+            add(180,'KXG50ZNV512G','Kioxia XG5 + 512GB regulatory evidence')
+        if ('KSG60ZMV' in nr or 'KSG8AZM' in nr or 'KSG6AZM' in nr) and cap=='256':
+            add(180,'KSG60ZMV256G','Kioxia/Toshiba KSG + 256GB evidence')
 
     if 'INTEL' in m and ('SSDPEMKF' in nr or 'SSOPEMKF' in nr) and re.search(r'\b256\s*GB\b',raw,re.I):
-        add(175,'SSDPEMKF256G8','Intel SSDPEMKF + repeated 256GB evidence')
+        add(180,'SSDPEMKF256G8','Intel SSDPEMKF + repeated 256GB evidence')
 
     if 'SAMSUNG' in m:
-        mm=re.search(r'MZVLB512[8B0]',nr)
+        mm=re.search(r'MZVLB512[8B0H]',nr)
         if mm:
             tail=mm.group(0)[-1]
-            if tail=='8': add(170,'MZVLB512B','Samsung MZVLB terminal 8->B')
-            else: add(150,mm.group(0),'Samsung MZVLB exact family')
+            if tail in ('8','H'): add(175,'MZVLB512B','Samsung MZVLB terminal OCR correction')
+            else: add(165,mm.group(0),'Samsung MZVLB exact family')
 
     if 'WESTERN DIGITAL' in m:
         mm=re.search(r'MDL\s*[:#-]?\s*(WD[0-9A-Z-]+)',raw,re.I)
         if mm:
             v=norm(mm.group(1))
             if v.endswith('AO'): v=v[:-1]+'0'
-            add(175,v,'WD MDL anchored model')
+            add(180,v,'WD MDL anchored model')
 
     best={}
     for s,c,w in out:
@@ -114,20 +115,26 @@ def load_det(path,source):
     return d
 
 def choose_candidate(man,full_blocks,targeted_blocks):
-    """Keep targeted OCR supplemental and non-destructive.
+    """Prefer bounded full-label vendor shapes; targeted OCR remains supplemental.
 
-    The full-label pass is the baseline. A targeted crop can corroborate the same
-    model, or fill a row only when the full-label pass yields no usable candidate.
-    It cannot replace a different full-label candidate. This prevents noisy crop
-    OCR from regressing already-correct model reads.
+    Full-label evidence stays authoritative. Targeted OCR may only supply one of the
+    explicit high-confidence recovery candidates (score >=170) when it is stronger
+    than the full-label candidate. Generic crop anchors never replace a full read.
     """
     base=family_candidates(man,full_blocks)
-    target=family_candidates(man,targeted_blocks)
+    combined=family_candidates(man,full_blocks+targeted_blocks)
     if base:
         chosen=base[0]
-        if any(c[1]==chosen[1] for c in target):
-            return chosen,'targeted-corroborates-full'
-        return chosen,'preserve-full-baseline'
+        strong=[c for c in combined if c[0]>=170]
+        if strong and strong[0][0]>chosen[0][0] if False else False:
+            pass
+        if strong and strong[0][0] > chosen[0]:
+            return strong[0],'high-confidence-recovery'
+        return chosen,'bounded-full-baseline'
+    strong=[c for c in combined if c[0]>=170]
+    if strong:
+        return strong[0],'targeted-high-confidence-fill'
+    target=family_candidates(man,targeted_blocks)
     if target:
         return target[0],'targeted-fills-empty-baseline'
     return None,'no-model-candidate'
