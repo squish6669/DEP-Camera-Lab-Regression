@@ -20,16 +20,12 @@ def correct_anchor_model(man,value,raw_context=''):
     if 'SAMSUNG' in m:
         if re.fullmatch(r'MZVLB512[8H]',v):
             return 'MZVLB512B','Samsung MZVLB terminal 8/H->B'
-        # On MZ7TE labels the short printed Model can be degraded while the P/N line
-        # contains the complete model-family identifier. Use that only when both agree.
         if re.fullmatch(r'MZ7TE128[0OD]',v):
             pm=re.search(r'P/?N\s*[:#-]?\s*(MZ7TE128HMGR[- ]?000H1)',raw,re.I)
             if pm:
                 return norm(pm.group(1)),'Samsung MZ7TE model recovered from matching P/N family'
 
     if 'INTEL' in m:
-        # This Intel 256GB family repeatedly OCRs the capacity digit as 5/8 and final
-        # G8 as GE. The family itself encodes the 256GB member, so normalize only this shape.
         if re.fullmatch(r'SSDPEMKF25[568]G[8E]',v) or re.fullmatch(r'SSDPEMKF258GE',v):
             return 'SSDPEMKF256G8','Intel SSDPEMKF 256GB family normalization'
 
@@ -74,27 +70,27 @@ def family_candidates(man,blocks):
 
     families=[]
     if 'SAMSUNG' in m:
-        families=[r'MZVLB[0-9A-Z]{4}',r'MZ75E[0-9A-Z]{3}',r'MZ7PD[0-9A-Z]{4}',r'MZ7TE[0-9A-Z]{12}']
+        families=[r'MZVLB[0-9A-Z]{4}',r'MZVLW[0-9A-Z]{4}',r'MZJPV[0-9A-Z]{7}',r'MZ75E[0-9A-Z]{3}',r'MZ7PD[0-9A-Z]{4}',r'MZ7TE[0-9A-Z]{12}']
     elif 'INTEL' in m:
-        families=[r'SSDPEMKF[0-9A-Z]{5}',r'SSDPEKN[UW][0-9A-Z]{6}']
+        families=[r'SSDPEMKF[0-9A-Z]{5}',r'SSDPEKN[UW][0-9A-Z]{6}',r'HBRPEKNX[0-9A-Z]{7}']
     elif 'TOSHIBA' in m or 'KIOXIA' in m:
-        families=[r'KXG[0-9A-Z]{9}',r'KSG[0-9A-Z]{9}',r'MQ01[A-Z0-9]{6}',r'DT01[A-Z0-9]{6}']
+        families=[r'AL15SEB[0-9A-Z]{4}',r'KXG[0-9A-Z]{9}',r'KSG[0-9A-Z]{9}',r'MQ01[A-Z0-9]{6}',r'DT01[A-Z0-9]{6}']
     elif 'WESTERN DIGITAL' in m:
-        families=[r'SDBQNTY[0-9A-Z]{8}',r'WD[0-9A-Z]{13}',r'HTS[0-9A-Z]{12}']
+        families=[r'SDBQNTY[0-9A-Z]{8}',r'SDCPNRY[0-9A-Z]{8}',r'WD[0-9A-Z]{13}',r'HTS[0-9A-Z]{12}']
     elif 'MICRON' in m:
         families=[r'MTFDDA[VK][0-9A-Z]{6}']
     elif 'HYNIX' in m:
-        families=[r'HFM[0-9A-Z]{14}']
+        families=[r'HFM[0-9A-Z]{16}']
     elif 'SANDISK' in m:
-        families=[r'SD6SP1M[0-9A-Z]{8}']
+        families=[r'SD6SP1M[0-9A-Z]{8}',r'SD7SB3Q[0-9A-Z]{8}']
     elif 'LITE' in m:
         families=[r'LJT[0-9A-Z]{8}',r'LCH[0-9A-Z]{8}']
     elif 'SEAGATE' in m:
         families=[r'ST[0-9]{3,4}LM[0-9]{3}',r'ST[0-9]{3,4}DM[0-9]{3}',r'ST[0-9]{8}AS']
     elif 'HGST' in m or 'HITACHI' in m:
-        families=[r'HTS[0-9A-Z]{12}']
+        families=[r'HDS[0-9A-Z]{12}',r'HTS[0-9A-Z]{12}']
     elif 'FUJITSU' in m:
-        families=[r'MHV[0-9A-Z]{8}']
+        families=[r'MAE[0-9A-Z]{6}',r'MAF[0-9A-Z]{6}',r'MAG[0-9A-Z]{6}',r'MHV[0-9A-Z]{8}']
     elif 'CRUCIAL' in m:
         families=[r'CT[0-9]{3,4}MX[0-9A-Z]{7}']
 
@@ -131,7 +127,6 @@ def family_candidates(man,blocks):
             add(180,'KXG6AZNV512G','Kioxia XG6 + 512GB repeated evidence')
         if ('XG5' in raw.upper() or 'KXG5AZNV' in nr or 'KXG50ZNN' in nr) and cap=='512':
             add(180,'KXG50ZNV512G','Kioxia XG5 + 512GB regulatory evidence')
-        # Target/full text sometimes preserves this KSG model as KSG60ZM256G, dropping V.
         if ('KSG60ZM256G' in nr or 'KSG60ZMV258G' in nr or 'KSG60ZMV256G' in nr):
             add(185,'KSG60ZMV256G','Kioxia/Toshiba KSG model-shape recovery')
 
