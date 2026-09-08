@@ -39,6 +39,12 @@ def correct_anchor_model(man,value,raw_context=''):
         if re.fullmatch(r'KSG[68]?[0A]ZM[VW]25[68]G',v) and has256:
             return 'KSG60ZMV256G','Kioxia/Toshiba KSG + 256GB family normalization'
 
+    if 'HYNIX' in m:
+        mm=re.fullmatch(r'HFM(128|256|512|1024)G[DO0]JTNG8310A(BA)?',v)
+        if mm:
+            cap=mm.group(1); suffix=mm.group(2) or ''
+            return f'HFM{cap}GDJTNG8310A{suffix}','SK hynix HFM D/O/0 normalization'
+
     if 'WESTERN DIGITAL' in m and re.fullmatch(r'WD[0-9A-Z]+AO',v):
         return v[:-1]+'0','WD terminal O->0'
 
@@ -80,7 +86,7 @@ def family_candidates(man,blocks):
     elif 'MICRON' in m:
         families=[r'MTFDDA[VK][0-9A-Z]{6}']
     elif 'HYNIX' in m:
-        families=[r'HFM[0-9A-Z]{16}']
+        families=[r'HFM(?:128|256|512|1024)G[DO0]JTNG8310A(?:BA)?']
     elif 'SANDISK' in m:
         families=[r'SD6SP1M[0-9A-Z]{8}',r'SD7SB3Q[0-9A-Z]{8}']
     elif 'LITE' in m:
