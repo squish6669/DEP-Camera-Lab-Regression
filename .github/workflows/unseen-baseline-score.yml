@@ -1,0 +1,35 @@
+name: Camera Lab Unseen Baseline Score
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [unseen-batch-20260908]
+    paths:
+      - ".github/workflows/unseen-baseline-score.yml"
+      - "scripts/score_unseen_app_output.py"
+      - "unseen/20260908/**"
+
+permissions:
+  contents: read
+
+jobs:
+  score-unseen-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Score frozen v1.2.0 unseen output
+        run: |
+          python scripts/score_unseen_app_output.py \
+            --ground-truth unseen/20260908/Unseen-Ground-Truth-20260908.csv \
+            --app-output unseen/20260908/Unseen-Baseline-20260908.csv \
+            --out-dir unseen-results
+          cat unseen-results/Unseen-Score.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload unseen baseline score
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camera-Lab-Unseen-Baseline-${{ github.run_number }}
+          path: unseen-results/**
+          retention-days: 30
