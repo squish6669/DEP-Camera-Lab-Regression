@@ -3,7 +3,7 @@ name: Camera Lab Targeted Model Reread
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, unseen-batch-20260908]
     paths:
       - ".github/workflows/model-target-reread.yml"
       - "scripts/model_postprocess.py"
