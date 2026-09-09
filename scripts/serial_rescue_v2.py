@@ -24,7 +24,6 @@ def strong(blocks,man):
     out=[]
     for b in blocks:
         t=(b.get('Text') or '').strip(); conf=float(b.get('BoxConfidence') or 0)
-        # Never accept Dell/HP/other part-number serial labels as drive serials.
         if re.search(r'(?i)\b(?:DS/N|DP/N|DPN|P/N|PN|CT|WWN|FRU)\b',t):continue
         m=re.search(r'(?i)HDD\s*S\s*/?\s*N\s*[:#-]?\s*([A-Z0-9-]{6,28})',t)
         if m: out.append((240+conf,clean(m.group(1),man),'explicit HDD S/N'));continue
@@ -32,7 +31,6 @@ def strong(blocks,man):
         if m: out.append((220+conf,clean(m.group(1),man),'explicit S/N'));continue
         m=re.match(r'^\*([A-Z0-9-]{6,24})\*$',t,re.I)
         if m: out.append((205+conf,clean(m.group(1),man),'star-wrapped drive serial'))
-    # Separate S/N/SIN/S1 anchors: take nearest right-hand same-row token(s), not remote LBA/capacity text.
     for a in blocks:
         t=(a.get('Text') or '').strip(); ab=box(a.get('Coordinates'))
         m=re.match(r'(?i)^\s*(?:S\s*[/\\I1|]?\s*N|S[I1]N|SN)\s*[:#-]?\s*([A-Z0-9]{0,4})\s*$',t)
@@ -46,8 +44,7 @@ def strong(blocks,man):
             p=norm(b.get('Text') or '')
             if not (2<=len(p)<=20) or re.match(r'^(?:LBA|SECTOR|CAPACITY|MODEL|PN|CT|WWN)',p):continue
             near.append((bb[0],bb[2],p,float(b.get('BoxConfidence') or 0)))
-        near.sort()
-        cur=prefix; last=ab[2]
+        near.sort();cur=prefix;last=ab[2]
         for x1,x2,p,cf in near:
             if x1-last>75:break
             if len(cur)+len(p)>24:break
@@ -60,15 +57,10 @@ def strong(blocks,man):
 def conservative_correct(man,c,blocks):
     m=man.upper(); c=norm(c); texts=' '.join((b.get('Text') or '') for b in blocks).upper()
     if not c:return c,''
-    # Family-scoped OCR glyph repairs. These are label-family rules, not image/ground-truth IDs.
-    if ('TOSHIBA' in m or 'KIOXIA' in m) and re.search(r'\bMK\d{4,}G',texts) and len(c)==9 and c[5]=='O':
-        return c[:5]+'0'+c[6:],'Toshiba MK-family O->0 serial glyph'
-    if ('HGST' in m or 'HITACHI' in m) and 'HUC156030CSS204' in norm(texts) and len(c)==8 and c[0]=='O':
-        return '0'+c[1:],'HGST HUC156030 family leading O->0'
-    if 'SEAGATE' in m and 'ST600MM0006' in norm(texts) and len(c)==8 and c[6]=='O':
-        return c[:6]+'0'+c[7:],'Seagate ST600MM0006 family O->0 glyph'
-    if 'HITACHI' in m and c.startswith('MPCZN7YO') and len(c)==14:
-        return c[:7]+'0'+c[8:],'Hitachi HDD S/N O->0 glyph'
+    if ('TOSHIBA' in m or 'KIOXIA' in m) and re.search(r'\bMK\d{4,}G',texts) and len(c)==9 and c[5]=='O': return c[:5]+'0'+c[6:],'Toshiba MK-family O->0 serial glyph'
+    if ('HGST' in m or 'HITACHI' in m) and 'HUC156030CSS204' in norm(texts) and len(c)==8 and c[0]=='O': return '0'+c[1:],'HGST HUC156030 family leading O->0'
+    if 'SEAGATE' in m and 'ST600MM0006' in norm(texts) and len(c)==8 and c[6]=='O': return c[:6]+'0'+c[7:],'Seagate ST600MM0006 family O->0 glyph'
+    if 'HITACHI' in m and c.startswith('MPCZN7YO') and len(c)==14: return c[:7]+'0'+c[8:],'Hitachi HDD S/N O->0 glyph'
     return c,''
 
 def main():
@@ -80,11 +72,17 @@ def main():
     rows=[]
     for fn,g in gt.items():
         exp=norm(g.get('ExpectedSerial'));man=g.get('ExpectedManufacturer','');old=norm((base.get(fn) or {}).get('CorrectedSerial'))
-        s,why,score=strong(det.get(fn,[]),man); candidate=s or old
+        s,why,score=strong(det.get(fn,[]),man)
+        # Architecture rule: the proven 2048 baseline is authoritative.
+        # Rescue passes may fill an empty/rejected baseline, but may not overwrite a populated baseline.
+        if old:
+            candidate=old; why='baseline-protected'; score=''
+        else:
+            candidate=s; why=why if s else ''; score=score if s else ''
         fixed,corr=conservative_correct(man,candidate,det.get(fn,[]))
         rows.append({'Image':fn,'Manufacturer':man,'ExpectedSerial':exp,'BaseSerial':old,'RescuedSerial':candidate,'FinalSerial':fixed,'BaseExact':bool(exp and old==exp),'FinalExact':bool(exp and fixed==exp),'RescueReason':why,'Correction':corr})
     scored=[r for r in rows if r['ExpectedSerial']]
-    summary={'serial_n':len(scored),'base_exact':sum(r['BaseExact'] for r in scored),'final_exact':sum(r['FinalExact'] for r in scored)}
+    summary={'serial_n':len(scored),'base_exact':sum(r['BaseExact'] for r in scored),'final_exact':sum(r['FinalExact'] for r in scored),'protected_nonempty':sum(1 for r in rows if r['BaseSerial'])}
     summary['final_pct']=round(100*summary['final_exact']/summary['serial_n'],1) if summary['serial_n'] else 0
     out=Path(a.out_dir);out.mkdir(parents=True,exist_ok=True)
     with open(out/'Serial-Rescue-v2-Results.csv','w',encoding='utf-8-sig',newline='') as f:
