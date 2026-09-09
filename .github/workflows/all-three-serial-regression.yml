@@ -16,7 +16,7 @@ env:
 jobs:
   regression:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -35,6 +35,7 @@ jobs:
             expected_images: 38
     steps:
       - uses: actions/checkout@v4
+
       - name: Expand corpus
         shell: pwsh
         run: |
@@ -45,30 +46,38 @@ jobs:
           $dirs = @($images | ForEach-Object DirectoryName | Sort-Object -Unique)
           if ($dirs.Count -ne 1) { throw "${{ matrix.batch }} expected one image directory, found $($dirs.Count)" }
           "IMAGE_DIR=$($dirs[0])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.RAPID_REPO }}
           path: RapidOCRCSharp
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
-      - name: Publish RapidOCR benchmark
+
+      - name: Publish RapidOCR 2048 sweep runner
         shell: pwsh
         run: |
-          dotnet publish RapidOCRCSharp/DriveLabelBenchmark/DriveLabelBenchmark.csproj -c Release -r win-x64 --self-contained true -o benchmark-publish
-          New-Item -ItemType Directory -Force benchmark-publish/models | Out-Null
-          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* benchmark-publish/models -Recurse -Force
-      - name: Run RapidOCR
+          dotnet publish RapidOCRCSharp/DriveLabelSweep/DriveLabelSweep.csproj -c Release -r win-x64 --self-contained true -o sweep-publish
+          New-Item -ItemType Directory -Force sweep-publish/models | Out-Null
+          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* sweep-publish/models -Recurse -Force
+
+      - name: Run RapidOCR at proven 2048 resolution
         shell: pwsh
         run: |
-          & .\benchmark-publish\DriveLabelBenchmark.exe "$env:IMAGE_DIR"
-          if ($LASTEXITCODE -ne 0) { throw "RapidOCR failed $LASTEXITCODE" }
-          $r = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Benchmark_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (!$r) { throw "${{ matrix.batch }} result folder missing" }
-          "RESULT_DIR=$($r.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          & .\sweep-publish\DriveLabelSweep.exe "$env:IMAGE_DIR" "2048"
+          if ($LASTEXITCODE -ne 0) { throw "RapidOCR 2048 failed $LASTEXITCODE" }
+          $r = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$r) { throw "${{ matrix.batch }} 2048 result folder missing" }
+          $setting = Join-Path $r.FullName "maxSideLen_2048"
+          if (!(Test-Path "$setting\RapidOCR_Detections.csv")) { throw "${{ matrix.batch }} 2048 detections missing" }
+          "RESULT_DIR=$setting" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Score current serial intelligence
         shell: pwsh
         run: |
@@ -81,13 +90,27 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Rescue v3 failed $LASTEXITCODE" }
           python scripts/serial_rescue_v4.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --v3-results "score-${{ matrix.batch }}\v3\Serial-Rescue-v3-Results.csv" --out-dir "score-${{ matrix.batch }}\v4"
           if ($LASTEXITCODE -ne 0) { throw "Rescue v4 failed $LASTEXITCODE" }
-          "## ${{ matrix.batch }}" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "## ${{ matrix.batch }} — 2048" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "### Proven base" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "score-${{ matrix.batch }}\base\Serial-Postprocess-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "### v3" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "score-${{ matrix.batch }}\v3\Serial-Rescue-v3-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "### v4" | Add-Content $env:GITHUB_STEP_SUMMARY
           Get-Content "score-${{ matrix.batch }}\v4\Serial-Rescue-v4-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Enforce original production floor
+        if: matrix.batch == 'original68'
+        shell: pwsh
+        run: |
+          $s = Get-Content "score-original68\base\Serial-Postprocess-Summary.json" | ConvertFrom-Json
+          Write-Host "Original 68 proven 2048 baseline: $($s.corrected_exact)/$($s.serial_n)"
+          if ([int]$s.corrected_exact -lt 60) { throw "Regression: original 68 proven 2048 baseline fell below 60/63" }
+
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Camera-Lab-AllThree-${{ matrix.batch }}-${{ github.run_number }}
+          name: Camera-Lab-AllThree-2048-${{ matrix.batch }}-${{ github.run_number }}
           path: |
             score-${{ matrix.batch }}/**
             ${{ env.RESULT_DIR }}/RapidOCR_Images.csv
