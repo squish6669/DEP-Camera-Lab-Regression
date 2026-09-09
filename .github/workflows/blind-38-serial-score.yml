@@ -7,6 +7,7 @@ on:
       - "unseen/Blind38-Ground-Truth-Serial.csv"
       - "scripts/serial_postprocess.py"
       - "scripts/serial_rescue_v2.py"
+      - "scripts/serial_rescue_v3.py"
   workflow_dispatch:
 permissions:
   contents: read
@@ -53,7 +54,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Score baseline and serial rescue v2
+      - name: Score baseline and serial rescue v3
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force blind38-score | Out-Null
@@ -61,8 +62,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Baseline serial scorer failed $LASTEXITCODE" }
           python scripts/serial_rescue_v2.py --ground-truth unseen/Blind38-Ground-Truth-Serial.csv --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --base-results blind38-score/Serial-Postprocess-Results.csv --out-dir blind38-score/rescue-v2
           if ($LASTEXITCODE -ne 0) { throw "Serial rescue v2 failed $LASTEXITCODE" }
+          python scripts/serial_rescue_v3.py --ground-truth unseen/Blind38-Ground-Truth-Serial.csv --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --v2-results blind38-score/rescue-v2/Serial-Rescue-v2-Results.csv --out-dir blind38-score/rescue-v3
+          if ($LASTEXITCODE -ne 0) { throw "Serial rescue v3 failed $LASTEXITCODE" }
           Get-Content blind38-score/Serial-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
           Get-Content blind38-score/rescue-v2/Serial-Rescue-v2-Summary.json | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content blind38-score/rescue-v3/Serial-Rescue-v3-Summary.json | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Upload score evidence
         if: always()
         uses: actions/upload-artifact@v4
