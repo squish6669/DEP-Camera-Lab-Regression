@@ -18,6 +18,15 @@ def same_row(a,b):
     ac=(a[1]+a[3])/2; bc=(b[1]+b[3])/2
     return abs(ac-bc)<=max(24,0.9*max(a[3]-a[1],b[3]-b[1]))
 
+def merge_overlap(left,right,max_overlap=4):
+    if not left:return right
+    if not right:return left
+    lim=min(max_overlap,len(left),len(right))
+    for n in range(lim,0,-1):
+        if left[-n:]==right[:n]:
+            return left+right[n:]
+    return left+right
+
 def samsung_split_rescue(man,model,blocks):
     if 'SAMSUNG' not in (man or '').upper(): return '',''
     if not norm(model).startswith('MZ7PD'): return '',''
@@ -37,10 +46,11 @@ def samsung_split_rescue(man,model,blocks):
         pieces.sort()
         for x1,x2,p in pieces:
             if x1-last>80: break
-            if len(cur)+len(p)>18: break
-            cur += p; last=max(last,x2)
+            merged=merge_overlap(cur,p)
+            if len(merged)>18: break
+            cur=merged; last=max(last,x2)
             if len(cur)==14 and re.fullmatch(r'S[0-9A-Z]{13}',cur):
-                return cur,'Samsung MZ7PD split S/N reconstruction'
+                return cur,'Samsung MZ7PD split S/N reconstruction with overlap merge'
     return '',''
 
 def toshiba_near_sn_rescue(man,model,blocks):
