@@ -1,0 +1,77 @@
+name: Camera Lab Blind38 Serial Score
+on:
+  push:
+    branches: [unseen-batch-20260908]
+    paths:
+      - ".github/workflows/blind-38-serial-score.yml"
+      - "unseen/Blind38-Ground-Truth-Serial.csv"
+      - "scripts/serial_postprocess.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  RAPID_REPO: squish6669/RapidOCRCSharp
+
+jobs:
+  score:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand frozen 38-image corpus
+        shell: pwsh
+        run: |
+          $zip = "unseen/batch 38.zip"
+          New-Item -ItemType Directory -Force blind38-images | Out-Null
+          Expand-Archive $zip blind38-images -Force
+          $images = @(Get-ChildItem blind38-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($images.Count -ne 38) { throw "Expected 38 images, found $($images.Count)" }
+          $dirs = @($images | ForEach-Object DirectoryName | Sort-Object -Unique)
+          if ($dirs.Count -ne 1) { throw "Expected one image directory" }
+          "IMAGE_DIR=$($dirs[0])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.RAPID_REPO }}
+          path: RapidOCRCSharp
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Publish RapidOCR benchmark
+        shell: pwsh
+        run: |
+          dotnet publish RapidOCRCSharp/DriveLabelBenchmark/DriveLabelBenchmark.csproj -c Release -r win-x64 --self-contained true -o benchmark-publish
+          New-Item -ItemType Directory -Force benchmark-publish/models | Out-Null
+          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* benchmark-publish/models -Recurse -Force
+      - name: Run RapidOCR
+        shell: pwsh
+        run: |
+          & .\benchmark-publish\DriveLabelBenchmark.exe "$env:IMAGE_DIR"
+          if ($LASTEXITCODE -ne 0) { throw "Benchmark failed $LASTEXITCODE" }
+          $r = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Benchmark_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$r) { throw "Result folder missing" }
+          "RESULT_DIR=$($r.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Score existing serial postprocessor
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force blind38-score | Out-Null
+          python scripts/serial_postprocess.py `
+            --ground-truth unseen/Blind38-Ground-Truth-Serial.csv `
+            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
+            --images "$env:RESULT_DIR\RapidOCR_Images.csv" `
+            --out-dir blind38-score
+          if ($LASTEXITCODE -ne 0) { throw "Serial scorer failed $LASTEXITCODE" }
+          Get-Content blind38-score/Serial-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Upload score evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camera-Lab-Blind38-Serial-Score-${{ github.run_number }}
+          path: |
+            blind38-score/**
+            ${{ env.RESULT_DIR }}/RapidOCR_Images.csv
+            ${{ env.RESULT_DIR }}/RapidOCR_Detections.csv
+          if-no-files-found: warn
+          retention-days: 90
