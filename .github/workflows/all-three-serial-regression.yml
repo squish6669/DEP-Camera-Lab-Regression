@@ -8,6 +8,7 @@ on:
       - "scripts/serial_postprocess.py"
       - "scripts/serial_rescue_v2.py"
       - "scripts/serial_rescue_v3.py"
+      - "scripts/serial_rescue_v4.py"
 permissions:
   contents: read
 env:
@@ -78,8 +79,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Rescue v2 failed $LASTEXITCODE" }
           python scripts/serial_rescue_v3.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --v2-results "score-${{ matrix.batch }}\v2\Serial-Rescue-v2-Results.csv" --out-dir "score-${{ matrix.batch }}\v3"
           if ($LASTEXITCODE -ne 0) { throw "Rescue v3 failed $LASTEXITCODE" }
+          python scripts/serial_rescue_v4.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --v3-results "score-${{ matrix.batch }}\v3\Serial-Rescue-v3-Results.csv" --out-dir "score-${{ matrix.batch }}\v4"
+          if ($LASTEXITCODE -ne 0) { throw "Rescue v4 failed $LASTEXITCODE" }
           "## ${{ matrix.batch }}" | Add-Content $env:GITHUB_STEP_SUMMARY
-          Get-Content "score-${{ matrix.batch }}\v3\Serial-Rescue-v3-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "score-${{ matrix.batch }}\v4\Serial-Rescue-v4-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
