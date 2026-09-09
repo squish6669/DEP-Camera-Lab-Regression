@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/all-three-serial-regression.yml"
       - "scripts/serial_postprocess.py"
+      - "scripts/serial_rescue_v2.py"
       - "scripts/serial_rescue_v3.py"
 permissions:
   contents: read
@@ -73,7 +74,9 @@ jobs:
           New-Item -ItemType Directory -Force "score-${{ matrix.batch }}" | Out-Null
           python scripts/serial_postprocess.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --images "$env:RESULT_DIR\RapidOCR_Images.csv" --out-dir "score-${{ matrix.batch }}\base"
           if ($LASTEXITCODE -ne 0) { throw "Base scorer failed $LASTEXITCODE" }
-          python scripts/serial_rescue_v3.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --base-results "score-${{ matrix.batch }}\base\Serial-Postprocess-Results.csv" --out-dir "score-${{ matrix.batch }}\v3"
+          python scripts/serial_rescue_v2.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --base-results "score-${{ matrix.batch }}\base\Serial-Postprocess-Results.csv" --out-dir "score-${{ matrix.batch }}\v2"
+          if ($LASTEXITCODE -ne 0) { throw "Rescue v2 failed $LASTEXITCODE" }
+          python scripts/serial_rescue_v3.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --v2-results "score-${{ matrix.batch }}\v2\Serial-Rescue-v2-Results.csv" --out-dir "score-${{ matrix.batch }}\v3"
           if ($LASTEXITCODE -ne 0) { throw "Rescue v3 failed $LASTEXITCODE" }
           "## ${{ matrix.batch }}" | Add-Content $env:GITHUB_STEP_SUMMARY
           Get-Content "score-${{ matrix.batch }}\v3\Serial-Rescue-v3-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
