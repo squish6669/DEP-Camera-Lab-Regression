@@ -54,9 +54,44 @@ def strong(blocks,man):
     out.sort(reverse=True)
     return out[0][1],out[0][2],out[0][0]
 
+def baseline_is_weak(old,base_row,blocks,man,strong_candidate,strong_score):
+    """Protect strong baseline reads, but allow a clearly stronger label-anchored rescue.
+    The decision uses only OCR evidence/reject context, never ground truth."""
+    if not old:return True,'empty baseline'
+    oldn=norm(old)
+    reason=(base_row or {}).get('Reason','') or ''
+    correction=(base_row or {}).get('Correction','') or ''
+
+    # Canonical WD serials do not keep the label's optional WD prefix.
+    if 'WESTERN DIGITAL' in (man or '').upper() and oldn.startswith('WD') and len(oldn)>=10:
+        return True,'noncanonical WD prefix'
+
+    # If the chosen value is literally embedded in an OEM/part-number identifier,
+    # it is not trustworthy as a drive serial.
+    reject_re=re.compile(r'(?i)\b(?:DS/N|DP/N|DPN|P/N|PN|CT|WWN|FRU|PSID|EUI)\b')
+    for b in blocks:
+        txt=(b.get('Text') or '').strip()
+        if reject_re.search(txt) and oldn and oldn in norm(txt):
+            return True,'baseline appears in OEM/part-number context'
+
+    # Near-anchor and spatial joins are useful, but lower-authority than a new
+    # explicit S/N/HDD S/N read. Only permit replacement when the rescue evidence
+    # is strong enough to be explicit/anchored.
+    weak_reason=('near-' in reason.lower() or 'spatial-join' in reason.lower())
+    explicit_rescue=bool(strong_candidate and strong_score and float(strong_score)>=220)
+    if weak_reason and explicit_rescue and norm(strong_candidate)!=oldn:
+        return True,'lower-authority baseline vs explicit S/N rescue'
+
+    # A prior vendor correction is considered strong and remains protected.
+    if correction:
+        return False,'vendor-corrected baseline'
+    return False,'strong baseline'
+
 def conservative_correct(man,c,blocks):
     m=man.upper(); c=norm(c); texts=' '.join((b.get('Text') or '') for b in blocks).upper()
     if not c:return c,''
+    if 'WESTERN DIGITAL' in m and c.startswith('WD') and len(c)>=10:
+        return c[2:],'WD label prefix removal'
     if ('TOSHIBA' in m or 'KIOXIA' in m) and re.search(r'\bMK\d{4,}G',texts) and len(c)==9 and c[5]=='O': return c[:5]+'0'+c[6:],'Toshiba MK-family O->0 serial glyph'
     if ('HGST' in m or 'HITACHI' in m) and 'HUC156030CSS204' in norm(texts) and len(c)==8 and c[0]=='O': return '0'+c[1:],'HGST HUC156030 family leading O->0'
     if 'SEAGATE' in m and 'ST600MM0006' in norm(texts) and len(c)==8 and c[6]=='O': return c[:6]+'0'+c[7:],'Seagate ST600MM0006 family O->0 glyph'
@@ -71,18 +106,19 @@ def main():
     for r in csv.DictReader(open(a.detections,encoding='utf-8-sig')):det[r['FileName']].append(r)
     rows=[]
     for fn,g in gt.items():
-        exp=norm(g.get('ExpectedSerial'));man=g.get('ExpectedManufacturer','');old=norm((base.get(fn) or {}).get('CorrectedSerial'))
+        exp=norm(g.get('ExpectedSerial'));man=g.get('ExpectedManufacturer','');br=base.get(fn) or {};old=norm(br.get('CorrectedSerial'))
         s,why,score=strong(det.get(fn,[]),man)
-        # Architecture rule: the proven 2048 baseline is authoritative.
-        # Rescue passes may fill an empty/rejected baseline, but may not overwrite a populated baseline.
-        if old:
+        weak,quality_reason=baseline_is_weak(old,br,det.get(fn,[]),man,s,score)
+        if old and not weak:
             candidate=old; why='baseline-protected'; score=''
+        elif s:
+            candidate=s; why=why; score=score
         else:
-            candidate=s; why=why if s else ''; score=score if s else ''
+            candidate=old; why='weak baseline retained; no stronger rescue' if old else ''; score=''
         fixed,corr=conservative_correct(man,candidate,det.get(fn,[]))
-        rows.append({'Image':fn,'Manufacturer':man,'ExpectedSerial':exp,'BaseSerial':old,'RescuedSerial':candidate,'FinalSerial':fixed,'BaseExact':bool(exp and old==exp),'FinalExact':bool(exp and fixed==exp),'RescueReason':why,'Correction':corr})
+        rows.append({'Image':fn,'Manufacturer':man,'ExpectedSerial':exp,'BaseSerial':old,'RescuedSerial':candidate,'FinalSerial':fixed,'BaseExact':bool(exp and old==exp),'FinalExact':bool(exp and fixed==exp),'BaselineQuality':'weak' if weak else 'strong','QualityReason':quality_reason,'RescueReason':why,'Correction':corr})
     scored=[r for r in rows if r['ExpectedSerial']]
-    summary={'serial_n':len(scored),'base_exact':sum(r['BaseExact'] for r in scored),'final_exact':sum(r['FinalExact'] for r in scored),'protected_nonempty':sum(1 for r in rows if r['BaseSerial'])}
+    summary={'serial_n':len(scored),'base_exact':sum(r['BaseExact'] for r in scored),'final_exact':sum(r['FinalExact'] for r in scored),'protected_nonempty':sum(1 for r in rows if r['BaseSerial'] and r['BaselineQuality']=='strong'),'weak_nonempty':sum(1 for r in rows if r['BaseSerial'] and r['BaselineQuality']=='weak')}
     summary['final_pct']=round(100*summary['final_exact']/summary['serial_n'],1) if summary['serial_n'] else 0
     out=Path(a.out_dir);out.mkdir(parents=True,exist_ok=True)
     with open(out/'Serial-Rescue-v2-Results.csv','w',encoding='utf-8-sig',newline='') as f:
