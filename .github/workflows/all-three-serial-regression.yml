@@ -8,11 +8,12 @@ on:
       - "scripts/serial_postprocess.py"
       - "scripts/serial_rescue_v2.py"
       - "scripts/serial_rescue_v3.py"
-      - "scripts/serial_rescue_v4.py"
+      - "scripts/serial_fusion.py"
 permissions:
   contents: read
 env:
   RAPID_REPO: squish6669/RapidOCRCSharp
+  RAPID_REF: ede58cc34fc07be55a049861c8e77edd9ca0e1a8
 jobs:
   regression:
     runs-on: windows-latest
@@ -50,70 +51,75 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.RAPID_REPO }}
+          ref: ${{ env.RAPID_REF }}
           path: RapidOCRCSharp
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
 
-      - name: Publish RapidOCR 2048 sweep runner
+      - name: Publish pinned RapidOCR sweep runner
         shell: pwsh
         run: |
           dotnet publish RapidOCRCSharp/DriveLabelSweep/DriveLabelSweep.csproj -c Release -r win-x64 --self-contained true -o sweep-publish
           New-Item -ItemType Directory -Force sweep-publish/models | Out-Null
           Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* sweep-publish/models -Recurse -Force
 
-      - name: Run RapidOCR at proven 2048 resolution
+      - name: Run RapidOCR dual-resolution evidence
         shell: pwsh
         run: |
-          & .\sweep-publish\DriveLabelSweep.exe "$env:IMAGE_DIR" "2048"
-          if ($LASTEXITCODE -ne 0) { throw "RapidOCR 2048 failed $LASTEXITCODE" }
+          & .\sweep-publish\DriveLabelSweep.exe "$env:IMAGE_DIR" "1024,2048"
+          if ($LASTEXITCODE -ne 0) { throw "RapidOCR dual sweep failed $LASTEXITCODE" }
           $r = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (!$r) { throw "${{ matrix.batch }} 2048 result folder missing" }
-          $setting = Join-Path $r.FullName "maxSideLen_2048"
-          if (!(Test-Path "$setting\RapidOCR_Detections.csv")) { throw "${{ matrix.batch }} 2048 detections missing" }
-          "RESULT_DIR=$setting" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          if (!$r) { throw "${{ matrix.batch }} result folder missing" }
+          "RESULT_ROOT=$($r.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Score current serial intelligence
+      - name: Score each resolution and fuse evidence
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force "score-${{ matrix.batch }}" | Out-Null
-          python scripts/serial_postprocess.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --images "$env:RESULT_DIR\RapidOCR_Images.csv" --out-dir "score-${{ matrix.batch }}\base"
-          if ($LASTEXITCODE -ne 0) { throw "Base scorer failed $LASTEXITCODE" }
-          python scripts/serial_rescue_v2.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --base-results "score-${{ matrix.batch }}\base\Serial-Postprocess-Results.csv" --out-dir "score-${{ matrix.batch }}\v2"
-          if ($LASTEXITCODE -ne 0) { throw "Rescue v2 failed $LASTEXITCODE" }
-          python scripts/serial_rescue_v3.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --v2-results "score-${{ matrix.batch }}\v2\Serial-Rescue-v2-Results.csv" --out-dir "score-${{ matrix.batch }}\v3"
-          if ($LASTEXITCODE -ne 0) { throw "Rescue v3 failed $LASTEXITCODE" }
-          python scripts/serial_rescue_v4.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --v3-results "score-${{ matrix.batch }}\v3\Serial-Rescue-v3-Results.csv" --out-dir "score-${{ matrix.batch }}\v4"
-          if ($LASTEXITCODE -ne 0) { throw "Rescue v4 failed $LASTEXITCODE" }
-          "## ${{ matrix.batch }} — 2048" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "### Proven base" | Add-Content $env:GITHUB_STEP_SUMMARY
-          Get-Content "score-${{ matrix.batch }}\base\Serial-Postprocess-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "### v3" | Add-Content $env:GITHUB_STEP_SUMMARY
-          Get-Content "score-${{ matrix.batch }}\v3\Serial-Rescue-v3-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "### v4" | Add-Content $env:GITHUB_STEP_SUMMARY
-          Get-Content "score-${{ matrix.batch }}\v4\Serial-Rescue-v4-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          foreach ($res in @(1024,2048)) {
+            $rd = "$env:RESULT_ROOT\maxSideLen_$res"
+            $root = "score-${{ matrix.batch }}\r$res"
+            python scripts/serial_postprocess.py --ground-truth "${{ matrix.gt }}" --detections "$rd\RapidOCR_Detections.csv" --images "$rd\RapidOCR_Images.csv" --out-dir "$root\base"
+            if ($LASTEXITCODE -ne 0) { throw "Base $res failed $LASTEXITCODE" }
+            python scripts/serial_rescue_v2.py --ground-truth "${{ matrix.gt }}" --detections "$rd\RapidOCR_Detections.csv" --base-results "$root\base\Serial-Postprocess-Results.csv" --out-dir "$root\v2"
+            if ($LASTEXITCODE -ne 0) { throw "v2 $res failed $LASTEXITCODE" }
+            python scripts/serial_rescue_v3.py --ground-truth "${{ matrix.gt }}" --detections "$rd\RapidOCR_Detections.csv" --v2-results "$root\v2\Serial-Rescue-v2-Results.csv" --out-dir "$root\v3"
+            if ($LASTEXITCODE -ne 0) { throw "v3 $res failed $LASTEXITCODE" }
+          }
+          python scripts/serial_fusion.py --ground-truth "${{ matrix.gt }}" --r1024-base "score-${{ matrix.batch }}\r1024\base\Serial-Postprocess-Results.csv" --r1024-v3 "score-${{ matrix.batch }}\r1024\v3\Serial-Rescue-v3-Results.csv" --r2048-base "score-${{ matrix.batch }}\r2048\base\Serial-Postprocess-Results.csv" --r2048-v3 "score-${{ matrix.batch }}\r2048\v3\Serial-Rescue-v3-Results.csv" --out-dir "score-${{ matrix.batch }}\fusion"
+          if ($LASTEXITCODE -ne 0) { throw "Fusion failed $LASTEXITCODE" }
+          "## ${{ matrix.batch }} dual-resolution" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "score-${{ matrix.batch }}\r1024\base\Serial-Postprocess-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "score-${{ matrix.batch }}\r1024\v3\Serial-Rescue-v3-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "score-${{ matrix.batch }}\r2048\base\Serial-Postprocess-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "score-${{ matrix.batch }}\r2048\v3\Serial-Rescue-v3-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "score-${{ matrix.batch }}\fusion\Serial-Fusion-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
 
-      - name: Enforce original production floor
-        if: matrix.batch == 'original68'
+      - name: Enforce serial regression gates
         shell: pwsh
         run: |
-          $s = Get-Content "score-original68\base\Serial-Postprocess-Summary.json" | ConvertFrom-Json
-          Write-Host "Original 68 proven 2048 baseline: $($s.corrected_exact)/$($s.serial_n)"
-          if ([int]$s.corrected_exact -lt 60) { throw "Regression: original 68 proven 2048 baseline fell below 60/63" }
+          $s = Get-Content "score-${{ matrix.batch }}\fusion\Serial-Fusion-Summary.json" | ConvertFrom-Json
+          $min = switch ("${{ matrix.batch }}") { "original68" {60}; "unseen17" {16}; "blind38" {33}; default {0} }
+          Write-Host "${{ matrix.batch }} fusion: $($s.final_exact)/$($s.serial_n); required >= $min"
+          if ([int]$s.final_exact -lt $min) { throw "Regression gate failed for ${{ matrix.batch }}: $($s.final_exact)/$($s.serial_n), require $min" }
 
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Camera-Lab-AllThree-2048-${{ matrix.batch }}-${{ github.run_number }}
+          name: Camera-Lab-AllThree-Dual-${{ matrix.batch }}-${{ github.run_number }}
           path: |
             score-${{ matrix.batch }}/**
-            ${{ env.RESULT_DIR }}/RapidOCR_Images.csv
-            ${{ env.RESULT_DIR }}/RapidOCR_Detections.csv
+            ${{ env.RESULT_ROOT }}/SweepSummary.csv
+            ${{ env.RESULT_ROOT }}/maxSideLen_1024/RapidOCR_Images.csv
+            ${{ env.RESULT_ROOT }}/maxSideLen_1024/RapidOCR_Detections.csv
+            ${{ env.RESULT_ROOT }}/maxSideLen_2048/RapidOCR_Images.csv
+            ${{ env.RESULT_ROOT }}/maxSideLen_2048/RapidOCR_Detections.csv
           if-no-files-found: warn
           retention-days: 90
