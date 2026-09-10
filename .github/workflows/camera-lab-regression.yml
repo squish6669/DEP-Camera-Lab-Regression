@@ -54,6 +54,12 @@ jobs:
           if ($gtNames.Count -ne $groundTruth.Count) {
             throw "Ground truth contains one or more blank Image values"
           }
+          if (@($imageNames | Sort-Object -Unique).Count -ne $imageNames.Count) {
+            throw "Available corpus contains duplicate image filenames"
+          }
+          if (@($gtNames | Sort-Object -Unique).Count -ne $gtNames.Count) {
+            throw "Ground truth contains duplicate Image values"
+          }
 
           $missingGt = @(Compare-Object -ReferenceObject $imageNames -DifferenceObject $gtNames | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
           $missingImage = @(Compare-Object -ReferenceObject $imageNames -DifferenceObject $gtNames | Where-Object SideIndicator -eq '=>' | ForEach-Object InputObject)
@@ -198,7 +204,6 @@ jobs:
           }
 
       - name: Score capacity extraction
-        if: always()
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path regression-results | Out-Null
@@ -212,7 +217,7 @@ jobs:
           }
 
       - name: Enforce promotion gate
-        if: always()
+        if: success()
         shell: pwsh
         run: |
           if (!(Test-Path regression-results/Regression-Summary.json)) { throw "Regression summary is missing" }
