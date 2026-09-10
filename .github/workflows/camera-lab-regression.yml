@@ -20,6 +20,7 @@ permissions:
 
 env:
   RAPID_REPO: squish6669/RapidOCRCSharp
+  RAPID_REF: ede58cc34fc07be55a049861c8e77edd9ca0e1a8
   TARGET_CORPUS_COUNT: "123"
   SERIAL_NO_REGRESSION_MIN_PCT: "95.0"
 
@@ -36,108 +37,86 @@ jobs:
         run: |
           if (!(Test-Path "data/Camera-Lab-Ground-Truth.csv")) { throw "Ground-truth CSV is missing" }
           New-Item -ItemType Directory -Force -Path regression-images | Out-Null
-
-          $parts = @(Get-ChildItem -File -Filter "*.zip" | Where-Object {
-            $_.Name -match 'Part(?:%20|\s)*[123]\.zip$'
-          } | Sort-Object Name)
-
+          $parts = @(Get-ChildItem -File -Filter "*.zip" | Where-Object { $_.Name -match 'Part(?:%20|\s)*[123]\.zip$' } | Sort-Object Name)
           if ($parts.Count -eq 3) {
-            Write-Host "Using split unified corpus: $($parts.Name -join ', ')"
+            Write-Host "Using split storage archives for the unified corpus: $($parts.Name -join ', ')"
             foreach ($part in $parts) { Expand-Archive -LiteralPath $part.FullName -DestinationPath regression-images -Force }
           } elseif (Test-Path "Camera Roll.zip") {
-            Write-Warning "Three split corpus archives were not found; falling back to Camera Roll.zip"
+            Write-Warning "Three split storage archives were not found; falling back to Camera Roll.zip"
             Expand-Archive -Path "Camera Roll.zip" -DestinationPath regression-images -Force
-          } else {
-            throw "No usable Camera Lab corpus archive found"
-          }
+          } else { throw "No usable Camera Lab corpus archive found" }
 
           $images = @(Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
           $groundTruth = @(Import-Csv "data/Camera-Lab-Ground-Truth.csv")
           $imageNames = @($images | ForEach-Object { $_.Name.ToLowerInvariant() })
           $uniqueImageNames = @($imageNames | Sort-Object -Unique)
-          if ($uniqueImageNames.Count -ne $images.Count) { throw "Corpus contains duplicate image filenames: $($images.Count) files but $($uniqueImageNames.Count) unique names" }
-
+          if ($uniqueImageNames.Count -ne $images.Count) { throw "Corpus contains duplicate image filenames" }
           $gtNames = @($groundTruth | ForEach-Object { ([string]$_.Image).Trim().ToLowerInvariant() } | Where-Object { $_ } | Sort-Object -Unique)
           if ($gtNames.Count -ne $groundTruth.Count) { throw "Ground truth contains blank or duplicate Image values" }
           $missingImage = @($gtNames | Where-Object { $_ -notin $uniqueImageNames })
-          if ($missingImage.Count -gt 0) { throw "Verified/subset ground truth contains image names not present in physical corpus: $($missingImage -join ', ')" }
-
+          if ($missingImage.Count -gt 0) { throw "Ground truth contains image names not present in physical corpus: $($missingImage -join ', ')" }
           $current = $images.Count; $target = [int]$env:TARGET_CORPUS_COUNT
           if ($current -ne $target) { throw "Unified corpus must contain exactly $target images; found $current" }
           $imageDirs = @($images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
           if ($imageDirs.Count -ne 1) { throw "Expected the unified corpus in one image folder, found $($imageDirs.Count) folders" }
-
           $verifiedGt = @($groundTruth | Where-Object { ([string]$_.Verified).Trim().ToUpperInvariant() -eq 'YES' }).Count
           $unscored = $current - $verifiedGt
-          $imageDir = $imageDirs[0]
-          "IMAGE_DIR=$imageDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "CORPUS_COUNT=$current" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "GT_COUNT=$($groundTruth.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "VERIFIED_GT_COUNT=$verifiedGt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "UNSCORED_COUNT=$unscored" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "Camera Lab corpus: $current/$target physical images. GT rows: $($groundTruth.Count); verified: $verifiedGt; awaiting verified scoring: $unscored."
+          "IMAGE_DIR=$($imageDirs[0])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "CORPUS_COUNT=$current" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "GT_COUNT=$($groundTruth.Count)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "VERIFIED_GT_COUNT=$verifiedGt" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "UNSCORED_COUNT=$unscored" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "# Camera Lab Unified Corpus" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Physical corpus: **$current / $target**" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "- Ground-truth rows: **$($groundTruth.Count)**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Verified ground-truth rows: **$verifiedGt**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Images awaiting trustworthy ground truth: **$unscored**" | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Validate image files before OCR
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path regression-results | Out-Null
-          New-Item -ItemType Directory -Force -Path regression-invalid | Out-Null
-
+          New-Item -ItemType Directory -Force -Path regression-results,regression-invalid | Out-Null
           $images = @(Get-ChildItem "$env:IMAGE_DIR" -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' } | Sort-Object Name)
           $invalid = @()
-
           foreach ($image in $images) {
             $reason = $null
             try {
-              $bytes = [System.IO.File]::ReadAllBytes($image.FullName)
-              if ($bytes.Length -lt 4) {
-                $reason = "File is too small to be a valid image"
-              } elseif ($image.Extension -match '^\.(jpg|jpeg)$') {
-                $hasSoi = ($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xD8)
-                $hasEoi = ($bytes[$bytes.Length - 2] -eq 0xFF -and $bytes[$bytes.Length - 1] -eq 0xD9)
-                if (-not $hasSoi) { $reason = "JPEG start marker is missing" }
-                elseif (-not $hasEoi) { $reason = "JPEG end marker is missing; file is truncated" }
+              $bytes = [IO.File]::ReadAllBytes($image.FullName)
+              if ($bytes.Length -lt 4) { $reason = "File is too small to be a valid image" }
+              elseif ($image.Extension -match '^\.(jpg|jpeg)$') {
+                if (!($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xD8)) { $reason = "JPEG start marker is missing" }
+                elseif (!($bytes[$bytes.Length-2] -eq 0xFF -and $bytes[$bytes.Length-1] -eq 0xD9)) { $reason = "JPEG end marker is missing; file is truncated" }
               }
-            } catch {
-              $reason = "Image preflight read failed: $($_.Exception.Message)"
-            }
-
+            } catch { $reason = "Image preflight read failed: $($_.Exception.Message)" }
             if ($reason) {
-              Write-Warning "QUARANTINED: $($image.Name) - $reason"
-              $invalid += [pscustomobject]@{ Image = $image.Name; Reason = $reason; Bytes = $image.Length }
+              $invalid += [pscustomobject]@{Image=$image.Name;Reason=$reason;Bytes=$image.Length}
               Move-Item -LiteralPath $image.FullName -Destination (Join-Path regression-invalid $image.Name) -Force
             }
           }
-
           $invalid | Export-Csv regression-results/Invalid-Images.csv -NoTypeInformation -Encoding UTF8
           $remaining = @(Get-ChildItem "$env:IMAGE_DIR" -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' }).Count
           $invalidCount = $invalid.Count
-          if (($remaining + $invalidCount) -ne [int]$env:TARGET_CORPUS_COUNT) {
-            throw "Image preflight accounting failure: $remaining OCR-ready + $invalidCount quarantined does not equal $env:TARGET_CORPUS_COUNT"
-          }
+          if (($remaining + $invalidCount) -ne [int]$env:TARGET_CORPUS_COUNT) { throw "Image preflight accounting failure" }
           if ($remaining -le 0) { throw "Image preflight left no readable images for OCR" }
-
-          "OCR_INPUT_COUNT=$remaining" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "INVALID_IMAGE_COUNT=$invalidCount" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
+          "OCR_INPUT_COUNT=$remaining" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "INVALID_IMAGE_COUNT=$invalidCount" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "## Image integrity preflight" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- OCR-ready images: **$remaining**" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "- Quarantined unreadable/truncated images: **$invalidCount**" | Add-Content $env:GITHUB_STEP_SUMMARY
-          if ($invalidCount -gt 0) {
-            foreach ($item in $invalid) { "- ⚠️ **$($item.Image)** — $($item.Reason)" | Add-Content $env:GITHUB_STEP_SUMMARY }
-          }
+          "- Quarantined images: **$invalidCount**" | Add-Content $env:GITHUB_STEP_SUMMARY
 
-      - name: Checkout RapidOCR source
+      - name: Checkout pinned RapidOCR source
         uses: actions/checkout@v4
         with:
           repository: ${{ env.RAPID_REPO }}
+          ref: ${{ env.RAPID_REF }}
           path: RapidOCRCSharp
+
+      - name: Confirm pinned RapidOCR revision
+        shell: pwsh
+        run: |
+          $actual = (git -C RapidOCRCSharp rev-parse HEAD).Trim()
+          if ($actual -ne $env:RAPID_REF) { throw "RapidOCR revision mismatch: expected $env:RAPID_REF, got $actual" }
+          Write-Host "RapidOCR pinned revision: $actual"
+          "- RapidOCR engine revision: **$actual**" | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
@@ -154,33 +133,26 @@ jobs:
       - name: Run RapidOCR on unified corpus
         shell: pwsh
         run: |
-          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          $sw = [Diagnostics.Stopwatch]::StartNew()
           & .\benchmark-publish\DriveLabelBenchmark.exe "$env:IMAGE_DIR"
-          $exit = $LASTEXITCODE
-          $sw.Stop()
+          $exit = $LASTEXITCODE; $sw.Stop()
           if ($exit -ne 0) { throw "Benchmark exited with code $exit" }
           $result = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Benchmark_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (!$result) { throw "Benchmark output folder not found" }
-
           $imageCsv = Join-Path $result.FullName "RapidOCR_Images.csv"
           if (!(Test-Path $imageCsv)) { throw "RapidOCR_Images.csv was not produced" }
           $ocrRows = @(Import-Csv $imageCsv)
-          $expectedOcr = [int]$env:OCR_INPUT_COUNT
-          $invalidCount = [int]$env:INVALID_IMAGE_COUNT
-          $target = [int]$env:TARGET_CORPUS_COUNT
-          if ($ocrRows.Count -ne $expectedOcr) { throw "RapidOCR output coverage failure: expected $expectedOcr OCR-ready image rows, got $($ocrRows.Count)" }
+          $expectedOcr = [int]$env:OCR_INPUT_COUNT; $invalidCount = [int]$env:INVALID_IMAGE_COUNT; $target = [int]$env:TARGET_CORPUS_COUNT
+          if ($ocrRows.Count -ne $expectedOcr) { throw "RapidOCR output coverage failure: expected $expectedOcr, got $($ocrRows.Count)" }
           $ocrErrors = @($ocrRows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Error) })
-          if ($ocrErrors.Count -gt 0) { throw "RapidOCR reported $($ocrErrors.Count) runtime image errors after image preflight" }
+          if ($ocrErrors.Count -gt 0) { throw "RapidOCR reported $($ocrErrors.Count) runtime image errors" }
           if (($ocrRows.Count + $invalidCount) -ne $target) { throw "Unified corpus accounting failure after OCR" }
-
-          "RESULT_DIR=$($result.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "OCR_ELAPSED_SECONDS=$([math]::Round($sw.Elapsed.TotalSeconds,2))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "OCR COMPLETED: $($ocrRows.Count) readable images processed, $invalidCount quarantined, $target/$target corpus entries accounted for."
+          "RESULT_DIR=$($result.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "OCR_ELAPSED_SECONDS=$([math]::Round($sw.Elapsed.TotalSeconds,2))" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "## Physical processing gate" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- OCR processed: **$($ocrRows.Count) / $target**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Quarantined before OCR: **$invalidCount**" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "- Corpus entries accounted for: **$target / $target**" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "- OCR runtime errors after preflight: **0**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- OCR runtime errors: **0**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- OCR elapsed: **$([math]::Round($sw.Elapsed.TotalSeconds,2)) sec**" | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Setup Python
@@ -192,47 +164,29 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path regression-results | Out-Null
-          python scripts/regression_score.py `
-            --ground-truth data/Camera-Lab-Ground-Truth.csv `
-            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
-            --images "$env:RESULT_DIR\RapidOCR_Images.csv" `
-            --out-dir regression-results
+          python scripts/regression_score.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --images "$env:RESULT_DIR\RapidOCR_Images.csv" --out-dir regression-results
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (Test-Path regression-results/Regression-Summary.md) {
-            "## Full-corpus diagnostic / verified-subset scoring" | Add-Content $env:GITHUB_STEP_SUMMARY
-            Get-Content regression-results/Regression-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
-          }
+          if (Test-Path regression-results/Regression-Summary.md) { "## Full-corpus diagnostic / verified-subset scoring" | Add-Content $env:GITHUB_STEP_SUMMARY; Get-Content regression-results/Regression-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY }
 
       - name: Gate production serial no-regression baseline
         shell: pwsh
         run: |
-          python scripts/serial_postprocess.py `
-            --ground-truth data/Camera-Lab-Ground-Truth.csv `
-            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
-            --images "$env:RESULT_DIR\RapidOCR_Images.csv" `
-            --out-dir regression-results
+          python scripts/serial_postprocess.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --images "$env:RESULT_DIR\RapidOCR_Images.csv" --out-dir regression-results
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
           $serial = Get-Content regression-results/Serial-Postprocess-Summary.json -Raw | ConvertFrom-Json
-          $pct = [double]$serial.corrected_pct
-          $n = [int]$serial.serial_n
-          $correct = [int]$serial.corrected_exact
-          $minimum = [double]$env:SERIAL_NO_REGRESSION_MIN_PCT
+          $pct = [double]$serial.corrected_pct; $n = [int]$serial.serial_n; $correct = [int]$serial.corrected_exact; $minimum = [double]$env:SERIAL_NO_REGRESSION_MIN_PCT
           if ($n -le 0) { throw "Serial no-regression gate has no verified serial rows" }
           if ($pct -lt $minimum) { throw "PRODUCTION SERIAL GATE FAILED: $correct/$n = $pct%, minimum is $minimum%" }
-          Write-Host "PRODUCTION SERIAL GATE PASSED: $correct/$n = $pct% (minimum $minimum%)"
+          Write-Host "PRODUCTION SERIAL GATE PASSED: $correct/$n = $pct%"
           "## Production serial no-regression gate" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "- **PASSED: $correct / $n exact after conservative production corrections ($pct%)**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- **PASSED: $correct / $n exact ($pct%)**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Minimum allowed: **$minimum%**" | Add-Content $env:GITHUB_STEP_SUMMARY
           if (Test-Path regression-results/Serial-Postprocess-Summary.md) { Get-Content regression-results/Serial-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY }
 
       - name: Score verified capacity extraction
         shell: pwsh
         run: |
-          python scripts/capacity_postprocess.py `
-            --ground-truth data/Camera-Lab-Ground-Truth.csv `
-            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
-            --out-dir regression-results
+          python scripts/capacity_postprocess.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --out-dir regression-results
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (Test-Path regression-results/Capacity-Postprocess-Summary.md) { Get-Content regression-results/Capacity-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY }
 
