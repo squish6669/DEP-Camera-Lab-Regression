@@ -47,8 +47,7 @@ def serial_candidates(blocks):
             continue
         for m in SERIAL_ANCHOR.finditer(text):
             c=clean_candidate(m.group(1))
-            if c:
-                out.append((120 + float(b.get('BoxConfidence') or 0)*10, c, f'anchored:{text}'))
+            if c: out.append((120 + float(b.get('BoxConfidence') or 0)*10, c, f'anchored:{text}'))
         if SERIAL_LABEL_ONLY.match(text):
             box=parse_box(b.get('Coordinates'))
             if box:
@@ -62,14 +61,13 @@ def serial_candidates(blocks):
                         c=clean_candidate(str(nb.get('Text') or ''))
                         if c:
                             dist=max(0,nx1-x2)
-                            out.append((105 - dist/80 + float(nb.get('BoxConfidence') or 0)*10, c, f'right-of-anchor:{text}->{nb.get("Text")}'))
+                            out.append((105-dist/80+float(nb.get('BoxConfidence') or 0)*10,c,f'right-of-anchor:{text}->{nb.get("Text")}'))
     for b in blocks:
         text=norm(str(b.get('Text') or ''))
         for prefix in ('SIN','S1N','SN'):
             if text.startswith(prefix) and len(text) >= len(prefix)+6:
                 c=clean_candidate(text[len(prefix):])
-                if c:
-                    out.append((112 + float(b.get('BoxConfidence') or 0)*10, c, f'ocr-anchor:{b.get("Text")}'))
+                if c: out.append((112+float(b.get('BoxConfidence') or 0)*10,c,f'ocr-anchor:{b.get("Text")}'))
     best={}
     for score,c,why in out:
         if c not in best or score>best[c][0]: best[c]=(score,why)
@@ -85,9 +83,11 @@ def best_near(expected, raw_text):
 
 def pick(row, *names):
     for name in names:
-        if name in row and row[name] is not None:
-            return row[name]
+        if name in row and row[name] is not None: return row[name]
     return ''
+
+def is_verified(row):
+    return (pick(row,'Verified') or '').strip().upper() in ('YES','TRUE','1')
 
 def main():
     ap=argparse.ArgumentParser()
@@ -100,19 +100,19 @@ def main():
     out=Path(args.out_dir); out.mkdir(parents=True,exist_ok=True)
 
     gt=list(csv.DictReader(open(args.ground_truth,encoding='utf-8-sig',newline='')))
+    gt_by_name={pick(r,'Image','FileName','Filename'):r for r in gt if pick(r,'Image','FileName','Filename')}
     det=defaultdict(list)
     with open(args.detections,encoding='utf-8-sig',newline='') as f:
         for r in csv.DictReader(f): det[pick(r,'FileName','Image','Filename')].append(r)
-    img={pick(r,'FileName','Image','Filename'):r for r in csv.DictReader(open(args.images,encoding='utf-8-sig',newline=''))}
+    image_rows=list(csv.DictReader(open(args.images,encoding='utf-8-sig',newline='')))
+    img={pick(r,'FileName','Image','Filename'):r for r in image_rows if pick(r,'FileName','Image','Filename')}
 
-    rows=[]
-    manuf=defaultdict(lambda: Counter())
-    for g in gt:
-        fn=pick(g,'Image','FileName','Filename')
+    rows=[]; manuf=defaultdict(lambda: Counter())
+    for fn in sorted(img, key=str.lower):
+        ir=img[fn]; g=gt_by_name.get(fn,{})
         exp_s=norm(pick(g,'ExpectedSerial','Serial','Expected Serial'))
         exp_m=norm(pick(g,'ExpectedModel','Model','Expected Model'))
-        raw=(img.get(fn) or {}).get('RawText','') or ''
-        raw_n=norm(raw)
+        raw=ir.get('RawText','') or ''; raw_n=norm(raw)
         raw_s_exact=bool(exp_s and exp_s in raw_n)
         near=best_near(exp_s,raw) if exp_s else None
         raw_s_near=bool(raw_s_exact or (near and near[0] <= 1))
@@ -120,39 +120,37 @@ def main():
         mnear=best_near(exp_m,raw) if exp_m else None
         raw_m_near=bool(raw_m_exact or (mnear and mnear[0] <= 1))
         cands=serial_candidates(det.get(fn,[]))
-        chosen=cands[0][1] if cands else ''
-        chosen_reason=cands[0][2] if cands else ''
+        chosen=cands[0][1] if cands else ''; chosen_reason=cands[0][2] if cands else ''
         selected_exact=bool(exp_s and chosen==exp_s)
         selected_near=bool(exp_s and chosen and levenshtein(exp_s,chosen)<=1)
-        verified=(pick(g,'Verified') or '').strip().upper()=='YES'
-        err=(img.get(fn) or {}).get('Error','') or ''
-        ms=float((img.get(fn) or {}).get('ElapsedMilliseconds') or 0)
+        verified=is_verified(g)
+        err=ir.get('Error','') or ''
+        ms=float(ir.get('ElapsedMilliseconds') or 0)
         manufacturer=pick(g,'ExpectedManufacturer','Manufacturer','Expected Manufacturer')
-        rows.append({
-            'Image':fn,'Manufacturer':manufacturer,'ExpectedSerial':exp_s,
-            'SelectedSerial':chosen,'SelectedSerialExact':selected_exact,'SelectedSerialNear1':selected_near,
-            'SelectedReason':chosen_reason,'RawSerialExact':raw_s_exact,'RawSerialNear1':raw_s_near,
-            'ExpectedModel':exp_m,'RawModelExact':raw_m_exact,'RawModelNear1':raw_m_near,
-            'ElapsedMilliseconds':round(ms,1),'Error':err,'Verified':verified,
-            'CandidateCount':len(cands),'TopCandidates':' | '.join(c for _,c,_ in cands[:5])
-        })
+        rows.append({'Image':fn,'Manufacturer':manufacturer,'ExpectedSerial':exp_s,'SelectedSerial':chosen,
+            'SelectedSerialExact':selected_exact,'SelectedSerialNear1':selected_near,'SelectedReason':chosen_reason,
+            'RawSerialExact':raw_s_exact,'RawSerialNear1':raw_s_near,'ExpectedModel':exp_m,
+            'RawModelExact':raw_m_exact,'RawModelNear1':raw_m_near,'ElapsedMilliseconds':round(ms,1),
+            'Error':err,'Verified':verified,'HasGroundTruth':bool(g),'CandidateCount':len(cands),
+            'TopCandidates':' | '.join(c for _,c,_ in cands[:5])})
         if verified and exp_s:
-            m=manuf[manufacturer]
-            m['n']+=1; m['raw_exact']+=int(raw_s_exact); m['raw_near']+=int(raw_s_near); m['selected_exact']+=int(selected_exact); m['selected_near']+=int(selected_near)
+            m=manuf[manufacturer]; m['n']+=1; m['raw_exact']+=int(raw_s_exact); m['raw_near']+=int(raw_s_near); m['selected_exact']+=int(selected_exact); m['selected_near']+=int(selected_near)
 
     verified_serial=[r for r in rows if r['Verified'] and r['ExpectedSerial']]
-    model_rows=[r for r in rows if r['ExpectedModel']]
+    model_rows=[r for r in rows if r['Verified'] and r['ExpectedModel']]
     elapsed=[r['ElapsedMilliseconds'] for r in rows if not r['Error'] and r['ElapsedMilliseconds']>0]
     elapsed_sorted=sorted(elapsed)
+    missing_verified=[fn for fn,g in gt_by_name.items() if is_verified(g) and fn not in img]
     def pct(n,d): return round(100*n/d,1) if d else 0
     def percentile(xs,p):
         if not xs:return 0
         k=(len(xs)-1)*p; f=math.floor(k); c=math.ceil(k)
         return xs[f] if f==c else xs[f]*(c-k)+xs[c]*(k-f)
     metrics={
-        'images':len(rows),'errors':sum(bool(r['Error']) for r in rows),
-        'serial_verified':len(verified_serial),
-        'raw_serial_exact':sum(r['RawSerialExact'] for r in verified_serial),
+        'images':len(rows),'physical_images_processed':len(rows),'errors':sum(bool(r['Error']) for r in rows),
+        'ground_truth_rows':len(gt),'verified_ground_truth_rows':sum(is_verified(g) for g in gt),
+        'unscored_images':sum(not r['Verified'] for r in rows),'missing_verified_images':len(missing_verified),
+        'serial_verified':len(verified_serial),'raw_serial_exact':sum(r['RawSerialExact'] for r in verified_serial),
         'raw_serial_near1':sum(r['RawSerialNear1'] for r in verified_serial),
         'selected_serial_exact':sum(r['SelectedSerialExact'] for r in verified_serial),
         'selected_serial_near1':sum(r['SelectedSerialNear1'] for r in verified_serial),
@@ -168,32 +166,31 @@ def main():
     metrics['raw_model_exact_pct']=pct(metrics['raw_model_exact'],metrics['model_expected'])
     metrics['raw_model_near1_pct']=pct(metrics['raw_model_near1'],metrics['model_expected'])
 
-    with open(out/'Regression-Results.csv','w',encoding='utf-8-sig',newline='') as f:
-        w=csv.DictWriter(f,fieldnames=rows[0].keys()); w.writeheader(); w.writerows(rows)
+    if rows:
+        with open(out/'Regression-Results.csv','w',encoding='utf-8-sig',newline='') as f:
+            w=csv.DictWriter(f,fieldnames=rows[0].keys()); w.writeheader(); w.writerows(rows)
     with open(out/'Regression-Summary.json','w',encoding='utf-8') as f:
-        json.dump({'metrics':metrics,'manufacturer':{k:dict(v) for k,v in manuf.items()}},f,indent=2)
+        json.dump({'metrics':metrics,'missing_verified_images':missing_verified,'manufacturer':{k:dict(v) for k,v in manuf.items()}},f,indent=2)
 
-    lines=['# DEP Camera Lab Regression Summary','',f"- Images: **{metrics['images']}**; OCR errors: **{metrics['errors']}**",
-           f"- Raw serial exact: **{metrics['raw_serial_exact']}/{metrics['serial_verified']} ({metrics['raw_serial_exact_pct']}%)**",
-           f"- Raw serial within 1 char: **{metrics['raw_serial_near1']}/{metrics['serial_verified']} ({metrics['raw_serial_near1_pct']}%)**",
-           f"- Spatial extractor serial exact: **{metrics['selected_serial_exact']}/{metrics['serial_verified']} ({metrics['selected_serial_exact_pct']}%)**",
-           f"- Spatial extractor within 1 char: **{metrics['selected_serial_near1']}/{metrics['serial_verified']} ({metrics['selected_serial_near1_pct']}%)**",
-           f"- Raw model exact: **{metrics['raw_model_exact']}/{metrics['model_expected']} ({metrics['raw_model_exact_pct']}%)**",
-           f"- Raw model within 1 char: **{metrics['raw_model_near1']}/{metrics['model_expected']} ({metrics['raw_model_near1_pct']}%)**",
-           f"- OCR runtime: avg **{metrics['avg_ms']} ms**, median **{metrics['median_ms']} ms**, p95 **{metrics['p95_ms']} ms**, max **{metrics['max_ms']} ms**",'',
-           '## Serial accuracy by manufacturer','','| Manufacturer | N | Raw exact | Raw near-1 | Extractor exact | Extractor near-1 |','|---|---:|---:|---:|---:|---:|']
+    lines=['# DEP Camera Lab Regression Summary','',
+        f"- Physical images processed: **{metrics['physical_images_processed']}**; OCR errors: **{metrics['errors']}**",
+        f"- Ground-truth rows: **{metrics['ground_truth_rows']}**; verified: **{metrics['verified_ground_truth_rows']}**; images awaiting verified scoring: **{metrics['unscored_images']}**",
+        f"- Raw serial exact (verified only): **{metrics['raw_serial_exact']}/{metrics['serial_verified']} ({metrics['raw_serial_exact_pct']}%)**",
+        f"- Spatial extractor serial exact (verified only): **{metrics['selected_serial_exact']}/{metrics['serial_verified']} ({metrics['selected_serial_exact_pct']}%)**",
+        f"- Raw model exact (verified only): **{metrics['raw_model_exact']}/{metrics['model_expected']} ({metrics['raw_model_exact_pct']}%)**",
+        f"- OCR runtime/image: avg **{metrics['avg_ms']} ms**, median **{metrics['median_ms']} ms**, p95 **{metrics['p95_ms']} ms**, max **{metrics['max_ms']} ms**",'',
+        '## Serial accuracy by manufacturer','','| Manufacturer | N | Raw exact | Raw near-1 | Extractor exact | Extractor near-1 |','|---|---:|---:|---:|---:|---:|']
     for k in sorted(manuf):
-        m=manuf[k]; n=m['n']
-        lines.append(f"| {k or '(blank)'} | {n} | {m['raw_exact']}/{n} | {m['raw_near']}/{n} | {m['selected_exact']}/{n} | {m['selected_near']}/{n} |")
+        m=manuf[k]; n=m['n']; lines.append(f"| {k or '(blank)'} | {n} | {m['raw_exact']}/{n} | {m['raw_near']}/{n} | {m['selected_exact']}/{n} | {m['selected_near']}/{n} |")
     wrong=[r for r in verified_serial if not r['SelectedSerialExact']]
-    lines += ['', '## Extractor misses', '', '| Image | Expected | Selected | Near-1 | Reason |','|---|---|---|---|---|']
+    lines += ['', '## Extractor misses (verified ground truth only)', '', '| Image | Expected | Selected | Near-1 | Reason |','|---|---|---|---|---|']
     for r in wrong:
-        reason=str(r['SelectedReason']).replace('|','/')[:90]
-        lines.append(f"| {r['Image']} | {r['ExpectedSerial']} | {r['SelectedSerial']} | {r['SelectedSerialNear1']} | {reason} |")
+        reason=str(r['SelectedReason']).replace('|','/')[:90]; lines.append(f"| {r['Image']} | {r['ExpectedSerial']} | {r['SelectedSerial']} | {r['SelectedSerialNear1']} | {reason} |")
     (out/'Regression-Summary.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
 
-    print('\n'.join(lines[:18]))
+    print('\n'.join(lines[:12]))
     failed=[]
+    if missing_verified: failed.append(f'{len(missing_verified)} verified ground-truth images were not processed')
     if args.thresholds:
         thresholds=json.load(open(args.thresholds,encoding='utf-8'))
         for key,minv in thresholds.get('minimums',{}).items():
@@ -201,7 +198,6 @@ def main():
         for key,maxv in thresholds.get('maximums',{}).items():
             if metrics.get(key,0) > maxv: failed.append(f'{key}={metrics.get(key)} > {maxv}')
     if failed:
-        print('REGRESSION GATE FAILED: ' + '; '.join(failed))
-        raise SystemExit(2)
+        print('REGRESSION GATE FAILED: ' + '; '.join(failed)); raise SystemExit(2)
 
 if __name__=='__main__': main()
