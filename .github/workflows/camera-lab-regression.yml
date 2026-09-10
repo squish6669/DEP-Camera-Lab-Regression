@@ -50,16 +50,17 @@ jobs:
           if ($gtNames.Count -ne $groundTruth.Count) {
             throw "Ground truth contains one or more blank Image values"
           }
-          if (@($imageNames | Sort-Object -Unique).Count -ne $imageNames.Count) {
+          $imageSet = @($imageNames | Sort-Object -Unique)
+          $gtSet = @($gtNames | Sort-Object -Unique)
+          if ($imageSet.Count -ne $imageNames.Count) {
             throw "Available corpus contains duplicate image filenames"
           }
-          if (@($gtNames | Sort-Object -Unique).Count -ne $gtNames.Count) {
+          if ($gtSet.Count -ne $gtNames.Count) {
             throw "Ground truth contains duplicate Image values"
           }
-          $missingGt = @(Compare-Object -ReferenceObject $imageNames -DifferenceObject $gtNames | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
-          $missingImage = @(Compare-Object -ReferenceObject $gtNames -DifferenceObject $imageNames | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
-          $missingImage = @(Compare-Object -ReferenceObject $gtNames -DifferenceObject $imageNames | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
-            Write-Host "Images without ground truth: $($missingGt -join ', ')"
+          $missingGt = @($imageSet | Where-Object { $_ -notin $gtSet })
+          $missingImage = @($gtSet | Where-Object { $_ -notin $imageSet })
+          if ($missingGt.Count -gt 0) {
             Write-Host "Images without ground truth: $($missingGt -join ', ')"
             throw "Every available image must have one matching ground-truth row"
           }
