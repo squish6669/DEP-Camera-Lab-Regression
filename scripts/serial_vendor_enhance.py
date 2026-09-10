@@ -53,13 +53,16 @@ def recover(man,model,blocks,current):
             if v.startswith('ND8C') and len(v)==17:
                 return 'NDB'+v[3:],'SK hynix HFM ND8C->NDBC correction'
 
-    # WD/SanDisk NVMe families in this stock use the printed 12-digit S/N.
+    # WD/SanDisk NVMe labels in this stock frequently use a 12-character S/N, but
+    # that S/N can be numeric OR alphanumeric. Numeric recovery is therefore a fallback
+    # only when the current selector did not already produce a plausible 12-char serial.
     if ('WESTERN DIGITAL' in m or m.strip()=='WD') and (md.startswith('SDBQNTY') or md.startswith('SDCPNRY')):
         vals=[]
         for t in block_texts(blocks):
             for v in re.findall(r'(?<!\d)(\d{12})(?!\d)',t):
                 if v not in vals: vals.append(v)
-        if len(vals)==1 and (not cur or not (len(cur)==12 and cur.isdigit())):
+        current_is_family_shape = bool(re.fullmatch(r'[A-Z0-9]{12}',cur))
+        if len(vals)==1 and not current_is_family_shape:
             return vals[0],'WD NVMe unique 12-digit serial recovery'
 
     # Samsung MZ7PD labels may expose the serial as a clean token even when another
