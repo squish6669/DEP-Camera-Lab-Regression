@@ -1,6 +1,7 @@
 {
   "candidate": "v1.2.0-production-candidate",
   "source_commit": "4def465dbce58e2569d985b37ce735a75a1522b8",
+  "rapidocr_source_commit": "ede58cc34fc07be55a049861c8e77edd9ca0e1a8",
   "known_corpus": {
     "images": 68,
     "serial_exact": "60/63",
@@ -15,5 +16,5 @@
     "minimum_model_exact_pct": 90.0,
     "max_errors": 0
   },
-  "notes": "Freeze tuning on the known 68-image corpus. Next promotion gate is a fresh unseen drive-photo batch."
+  "notes": "Known-corpus production candidate. RapidOCR engine revision is explicitly pinned for reproducible regression. Active development corpus is the unified 123-image corpus; accuracy beyond the verified subset must not be claimed until ground truth is verified."
 }
