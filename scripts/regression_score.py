@@ -141,7 +141,7 @@ def main():
             m['n']+=1; m['raw_exact']+=int(raw_s_exact); m['raw_near']+=int(raw_s_near); m['selected_exact']+=int(selected_exact); m['selected_near']+=int(selected_near)
 
     verified_serial=[r for r in rows if r['Verified'] and r['ExpectedSerial']]
-    model_rows=[r for r in rows if r['ExpectedModel']]
+    model_rows=[r for r in rows if r['Verified'] and r['ExpectedModel']]
     elapsed=[r['ElapsedMilliseconds'] for r in rows if not r['Error'] and r['ElapsedMilliseconds']>0]
     elapsed_sorted=sorted(elapsed)
     def pct(n,d): return round(100*n/d,1) if d else 0
@@ -168,8 +168,11 @@ def main():
     metrics['raw_model_exact_pct']=pct(metrics['raw_model_exact'],metrics['model_expected'])
     metrics['raw_model_near1_pct']=pct(metrics['raw_model_near1'],metrics['model_expected'])
 
+    fields=list(rows[0].keys()) if rows else []
     with open(out/'Regression-Results.csv','w',encoding='utf-8-sig',newline='') as f:
-        w=csv.DictWriter(f,fieldnames=rows[0].keys()); w.writeheader(); w.writerows(rows)
+        w=csv.DictWriter(f,fieldnames=fields)
+        if fields:
+            w.writeheader(); w.writerows(rows)
     with open(out/'Regression-Summary.json','w',encoding='utf-8') as f:
         json.dump({'metrics':metrics,'manufacturer':{k:dict(v) for k,v in manuf.items()}},f,indent=2)
 
