@@ -1,10 +1,11 @@
-name: Camera Lab 68-Image Regression
+name: Camera Lab Unified Corpus Regression
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
+      - "Camera Roll.zip"
       - "scripts/**"
       - "data/**"
       - "regression-thresholds.json"
@@ -17,28 +18,59 @@ permissions:
 
 env:
   RAPID_REPO: squish6669/RapidOCRCSharp
+  TARGET_CORPUS_COUNT: "123"
 
 jobs:
   regression:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout regression repository
         uses: actions/checkout@v4
 
-      - name: Verify private image corpus
+      - name: Verify unified image corpus
         shell: pwsh
         run: |
           if (!(Test-Path "Camera Roll.zip")) { throw "Camera Roll.zip is missing" }
+          if (!(Test-Path "data/Camera-Lab-Ground-Truth.csv")) { throw "Ground-truth CSV is missing" }
+
           New-Item -ItemType Directory -Force -Path regression-images | Out-Null
           Expand-Archive -Path "Camera Roll.zip" -DestinationPath regression-images -Force
-          $images = Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' }
-          if ($images.Count -ne 68) { throw "Expected 68 images, found $($images.Count)" }
+
+          $images = @(Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          $groundTruth = @(Import-Csv "data/Camera-Lab-Ground-Truth.csv")
+
+          if ($images.Count -ne $groundTruth.Count) {
+            throw "Unified corpus mismatch: $($images.Count) images but $($groundTruth.Count) ground-truth rows"
+          }
+
           $imageDirs = @($images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
-          if ($imageDirs.Count -ne 1) { throw "Expected all 68 images in one folder, found $($imageDirs.Count) folders" }
+          if ($imageDirs.Count -ne 1) {
+            throw "Expected the unified corpus in one folder, found $($imageDirs.Count) folders"
+          }
+
+          $imageNames = @($images | ForEach-Object { $_.Name.ToLowerInvariant() } | Sort-Object)
+          $gtNames = @($groundTruth | ForEach-Object { ([string]$_.Image).Trim().ToLowerInvariant() } | Where-Object { $_ } | Sort-Object)
+          if ($gtNames.Count -ne $groundTruth.Count) {
+            throw "Ground truth contains one or more blank Image values"
+          }
+
+          $missingGt = @(Compare-Object -ReferenceObject $imageNames -DifferenceObject $gtNames | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
+          $missingImage = @(Compare-Object -ReferenceObject $imageNames -DifferenceObject $gtNames | Where-Object SideIndicator -eq '=>' | ForEach-Object InputObject)
+          if ($missingGt.Count -gt 0 -or $missingImage.Count -gt 0) {
+            Write-Host "Images without ground truth: $($missingGt -join ', ')"
+            Write-Host "Ground-truth rows without images: $($missingImage -join ', ')"
+            throw "Image/ground-truth filenames do not match"
+          }
+
+          if ($images.Count -ne [int]$env:TARGET_CORPUS_COUNT) {
+            throw "Unified corpus is not complete: target $env:TARGET_CORPUS_COUNT images, currently $($images.Count)"
+          }
+
           $imageDir = $imageDirs[0]
           "IMAGE_DIR=$imageDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Regression corpus verified: $($images.Count) images in $imageDir"
+          "CORPUS_COUNT=$($images.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Unified Camera Lab corpus verified: $($images.Count)/$env:TARGET_CORPUS_COUNT images in $imageDir"
 
       - name: Checkout RapidOCR source
         uses: actions/checkout@v4
@@ -58,7 +90,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path benchmark-publish/models | Out-Null
           Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* benchmark-publish/models -Recurse -Force
 
-      - name: Run RapidOCR on 68-image corpus
+      - name: Run RapidOCR on unified corpus
         shell: pwsh
         run: |
           & .\benchmark-publish\DriveLabelBenchmark.exe "$env:IMAGE_DIR"
@@ -84,6 +116,7 @@ jobs:
             --thresholds regression-thresholds.json
           $exit = $LASTEXITCODE
           if (Test-Path regression-results/Regression-Summary.md) {
+            "# Unified Camera Lab corpus: $env:CORPUS_COUNT images" | Add-Content $env:GITHUB_STEP_SUMMARY
             Get-Content regression-results/Regression-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
           }
           if ($exit -ne 0) { exit $exit }
@@ -106,7 +139,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Camera-Lab-Regression-${{ github.run_number }}
+          name: Camera-Lab-Unified-Regression-${{ github.run_number }}
           path: |
             regression-results/**
             ${{ env.RESULT_DIR }}/RapidOCR_Images.csv
