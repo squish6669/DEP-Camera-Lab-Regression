@@ -1,0 +1,83 @@
+name: Camera Lab Identity Regression
+on:
+  workflow_dispatch:
+  push:
+    branches: [unseen-batch-20260908]
+    paths:
+      - ".github/workflows/identity-regression.yml"
+      - "scripts/model_postprocess.py"
+permissions:
+  contents: read
+env:
+  RAPID_REPO: squish6669/RapidOCRCSharp
+  RAPID_REF: ede58cc34fc07be55a049861c8e77edd9ca0e1a8
+jobs:
+  identity:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - batch: original68
+            zip: "Camera Roll.zip"
+            gt: "data/Camera-Lab-Ground-Truth.csv"
+            expected_images: 68
+          - batch: unseen17
+            zip: "unseen/20260908/Camera Roll (2).zip"
+            gt: "unseen/20260908/Unseen-Ground-Truth-20260908.csv"
+            expected_images: 17
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand corpus
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "images-${{ matrix.batch }}" | Out-Null
+          Expand-Archive "${{ matrix.zip }}" "images-${{ matrix.batch }}" -Force
+          $images=@(Get-ChildItem "images-${{ matrix.batch }}" -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($images.Count -ne ${{ matrix.expected_images }}) { throw "Expected ${{ matrix.expected_images }}, found $($images.Count)" }
+          $dirs=@($images | ForEach-Object DirectoryName | Sort-Object -Unique)
+          if ($dirs.Count -ne 1) { throw "Expected one image directory" }
+          "IMAGE_DIR=$($dirs[0])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.RAPID_REPO }}
+          ref: ${{ env.RAPID_REF }}
+          path: RapidOCRCSharp
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Publish pinned OCR runner
+        shell: pwsh
+        run: |
+          dotnet publish RapidOCRCSharp/DriveLabelSweep/DriveLabelSweep.csproj -c Release -r win-x64 --self-contained true -o sweep-publish
+          New-Item -ItemType Directory -Force sweep-publish/models | Out-Null
+          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* sweep-publish/models -Recurse -Force
+      - name: Run 2048 OCR evidence
+        shell: pwsh
+        run: |
+          & .\sweep-publish\DriveLabelSweep.exe "$env:IMAGE_DIR" "2048"
+          if ($LASTEXITCODE -ne 0) { throw "OCR failed" }
+          $r=Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$r) { throw "OCR result missing" }
+          "RESULT_DIR=$($r.FullName)\maxSideLen_2048" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Score model identity
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "identity-${{ matrix.batch }}" | Out-Null
+          python scripts/model_postprocess.py --ground-truth "${{ matrix.gt }}" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --out-dir "identity-${{ matrix.batch }}\model"
+          if ($LASTEXITCODE -ne 0) { throw "Model scorer failed" }
+          Get-Content "identity-${{ matrix.batch }}\model\Model-Postprocess-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Upload identity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camera-Lab-Identity-${{ matrix.batch }}-${{ github.run_number }}
+          path: |
+            identity-${{ matrix.batch }}/**
+            ${{ env.RESULT_DIR }}/RapidOCR_Images.csv
+            ${{ env.RESULT_DIR }}/RapidOCR_Detections.csv
+          retention-days: 90
