@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - "Camera Roll*.zip"
+      - "Camera%20Roll*.zip"
       - "scripts/**"
       - "data/**"
       - "regression-thresholds.json"
