@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/all-three-serial-regression.yml"
       - "scripts/serial_postprocess.py"
+      - "scripts/serial_vendor_enhance.py"
       - "scripts/serial_rescue_v2.py"
       - "scripts/serial_rescue_v3.py"
       - "scripts/serial_fusion.py"
@@ -85,8 +86,10 @@ jobs:
           foreach ($res in @(1024,2048)) {
             $rd = "$env:RESULT_ROOT\maxSideLen_$res"
             $root = "score-${{ matrix.batch }}\r$res"
-            python scripts/serial_postprocess.py --ground-truth "${{ matrix.gt }}" --detections "$rd\RapidOCR_Detections.csv" --images "$rd\RapidOCR_Images.csv" --out-dir "$root\base"
+            python scripts/serial_postprocess.py --ground-truth "${{ matrix.gt }}" --detections "$rd\RapidOCR_Detections.csv" --images "$rd\RapidOCR_Images.csv" --out-dir "$root\base-raw"
             if ($LASTEXITCODE -ne 0) { throw "Base $res failed $LASTEXITCODE" }
+            python scripts/serial_vendor_enhance.py --ground-truth "${{ matrix.gt }}" --detections "$rd\RapidOCR_Detections.csv" --base-results "$root\base-raw\Serial-Postprocess-Results.csv" --out-dir "$root\base"
+            if ($LASTEXITCODE -ne 0) { throw "Vendor enhance $res failed $LASTEXITCODE" }
             python scripts/serial_rescue_v2.py --ground-truth "${{ matrix.gt }}" --detections "$rd\RapidOCR_Detections.csv" --base-results "$root\base\Serial-Postprocess-Results.csv" --out-dir "$root\v2"
             if ($LASTEXITCODE -ne 0) { throw "v2 $res failed $LASTEXITCODE" }
             python scripts/serial_rescue_v3.py --ground-truth "${{ matrix.gt }}" --detections "$rd\RapidOCR_Detections.csv" --v2-results "$root\v2\Serial-Rescue-v2-Results.csv" --out-dir "$root\v3"
@@ -94,11 +97,14 @@ jobs:
           }
           python scripts/serial_fusion.py --ground-truth "${{ matrix.gt }}" --r1024-base "score-${{ matrix.batch }}\r1024\base\Serial-Postprocess-Results.csv" --r1024-v3 "score-${{ matrix.batch }}\r1024\v3\Serial-Rescue-v3-Results.csv" --r2048-base "score-${{ matrix.batch }}\r2048\base\Serial-Postprocess-Results.csv" --r2048-v3 "score-${{ matrix.batch }}\r2048\v3\Serial-Rescue-v3-Results.csv" --out-dir "score-${{ matrix.batch }}\fusion"
           if ($LASTEXITCODE -ne 0) { throw "Fusion failed $LASTEXITCODE" }
-          "## ${{ matrix.batch }} dual-resolution" | Add-Content $env:GITHUB_STEP_SUMMARY
-          Get-Content "score-${{ matrix.batch }}\r1024\base\Serial-Postprocess-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "## ${{ matrix.batch }} dual-resolution identity evidence" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "### 1024 vendor-enhanced" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "score-${{ matrix.batch }}\r1024\base\Serial-Vendor-Enhance-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
           Get-Content "score-${{ matrix.batch }}\r1024\v3\Serial-Rescue-v3-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
-          Get-Content "score-${{ matrix.batch }}\r2048\base\Serial-Postprocess-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "### 2048 vendor-enhanced" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content "score-${{ matrix.batch }}\r2048\base\Serial-Vendor-Enhance-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
           Get-Content "score-${{ matrix.batch }}\r2048\v3\Serial-Rescue-v3-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "### Fused" | Add-Content $env:GITHUB_STEP_SUMMARY
           Get-Content "score-${{ matrix.batch }}\fusion\Serial-Fusion-Summary.json" | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Enforce serial regression gates
