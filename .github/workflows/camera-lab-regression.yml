@@ -21,6 +21,7 @@ permissions:
 env:
   RAPID_REPO: squish6669/RapidOCRCSharp
   TARGET_CORPUS_COUNT: "123"
+  SERIAL_NO_REGRESSION_MIN_PCT: "95.0"
 
 jobs:
   regression:
@@ -34,20 +35,15 @@ jobs:
         shell: pwsh
         run: |
           if (!(Test-Path "data/Camera-Lab-Ground-Truth.csv")) { throw "Ground-truth CSV is missing" }
-
           New-Item -ItemType Directory -Force -Path regression-images | Out-Null
 
-          # Prefer the three split archives when present. GitHub may preserve either
-          # normal spaces or percent-encoded names depending on how they were uploaded.
           $parts = @(Get-ChildItem -File -Filter "*.zip" | Where-Object {
             $_.Name -match 'Part(?:%20|\s)*[123]\.zip$'
           } | Sort-Object Name)
 
           if ($parts.Count -eq 3) {
             Write-Host "Using split unified corpus: $($parts.Name -join ', ')"
-            foreach ($part in $parts) {
-              Expand-Archive -LiteralPath $part.FullName -DestinationPath regression-images -Force
-            }
+            foreach ($part in $parts) { Expand-Archive -LiteralPath $part.FullName -DestinationPath regression-images -Force }
           } elseif (Test-Path "Camera Roll.zip") {
             Write-Warning "Three split corpus archives were not found; falling back to Camera Roll.zip"
             Expand-Archive -Path "Camera Roll.zip" -DestinationPath regression-images -Force
@@ -57,55 +53,35 @@ jobs:
 
           $images = @(Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
           $groundTruth = @(Import-Csv "data/Camera-Lab-Ground-Truth.csv")
-
           $imageNames = @($images | ForEach-Object { $_.Name.ToLowerInvariant() })
           $uniqueImageNames = @($imageNames | Sort-Object -Unique)
-          if ($uniqueImageNames.Count -ne $images.Count) {
-            throw "Corpus contains duplicate image filenames: $($images.Count) files but $($uniqueImageNames.Count) unique names"
-          }
+          if ($uniqueImageNames.Count -ne $images.Count) { throw "Corpus contains duplicate image filenames: $($images.Count) files but $($uniqueImageNames.Count) unique names" }
 
           $gtNames = @($groundTruth | ForEach-Object { ([string]$_.Image).Trim().ToLowerInvariant() } | Where-Object { $_ } | Sort-Object -Unique)
-          if ($gtNames.Count -ne $groundTruth.Count) {
-            throw "Ground truth contains blank or duplicate Image values"
-          }
-
-          # Ground truth is allowed to be a verified subset of the physical corpus.
-          # This lets all 123 physical images run through RapidOCR while keeping
-          # accuracy scoring restricted to rows that have trustworthy labels.
+          if ($gtNames.Count -ne $groundTruth.Count) { throw "Ground truth contains blank or duplicate Image values" }
           $missingImage = @($gtNames | Where-Object { $_ -notin $uniqueImageNames })
-          if ($missingImage.Count -gt 0) {
-            Write-Host "Ground-truth rows without images: $($missingImage -join ', ')"
-            throw "One or more verified ground-truth rows are missing from the physical corpus"
-          }
+          if ($missingImage.Count -gt 0) { throw "Verified/subset ground truth contains image names not present in physical corpus: $($missingImage -join ', ')" }
 
-          $current = $images.Count
-          $target = [int]$env:TARGET_CORPUS_COUNT
-          if ($current -ne $target) {
-            throw "Unified corpus must contain exactly $target images; found $current"
-          }
-
+          $current = $images.Count; $target = [int]$env:TARGET_CORPUS_COUNT
+          if ($current -ne $target) { throw "Unified corpus must contain exactly $target images; found $current" }
           $imageDirs = @($images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
-          if ($imageDirs.Count -ne 1) {
-            throw "Expected the unified corpus in one image folder, found $($imageDirs.Count) folders"
-          }
+          if ($imageDirs.Count -ne 1) { throw "Expected the unified corpus in one image folder, found $($imageDirs.Count) folders" }
 
           $verifiedGt = @($groundTruth | Where-Object { ([string]$_.Verified).Trim().ToUpperInvariant() -eq 'YES' }).Count
-          $unscored = $current - $groundTruth.Count
+          $unscored = $current - $verifiedGt
           $imageDir = $imageDirs[0]
-
           "IMAGE_DIR=$imageDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "CORPUS_COUNT=$current" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "GT_COUNT=$($groundTruth.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "VERIFIED_GT_COUNT=$verifiedGt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "UNSCORED_COUNT=$unscored" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "CORPUS_COMPLETE=true" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          Write-Host "Camera Lab unified corpus inventory: $current/$target physical images. Ground truth: $($groundTruth.Count), verified: $verifiedGt, currently unscored: $unscored."
+          Write-Host "Camera Lab corpus: $current/$target physical images. GT rows: $($groundTruth.Count); verified: $verifiedGt; awaiting verified scoring: $unscored."
           "# Camera Lab Unified Corpus" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "- Physical images: **$current / $target**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- Physical corpus: **$current / $target**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Ground-truth rows: **$($groundTruth.Count)**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Verified ground-truth rows: **$verifiedGt**" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "- Physical images awaiting trustworthy ground truth: **$unscored**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- Images awaiting trustworthy ground truth: **$unscored**" | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Checkout RapidOCR source
         uses: actions/checkout@v4
@@ -135,16 +111,28 @@ jobs:
           if ($exit -ne 0) { throw "Benchmark exited with code $exit" }
           $result = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Benchmark_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (!$result) { throw "Benchmark output folder not found" }
+
+          $imageCsv = Join-Path $result.FullName "RapidOCR_Images.csv"
+          if (!(Test-Path $imageCsv)) { throw "RapidOCR_Images.csv was not produced" }
+          $ocrRows = @(Import-Csv $imageCsv)
+          $expected = [int]$env:TARGET_CORPUS_COUNT
+          if ($ocrRows.Count -ne $expected) { throw "RapidOCR output coverage failure: expected $expected image rows, got $($ocrRows.Count)" }
+          $ocrErrors = @($ocrRows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Error) })
+          if ($ocrErrors.Count -gt 0) { throw "RapidOCR reported $($ocrErrors.Count) image errors in the 123-image corpus" }
+
           "RESULT_DIR=$($result.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "OCR_ELAPSED_SECONDS=$([math]::Round($sw.Elapsed.TotalSeconds,2))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "RapidOCR elapsed: $([math]::Round($sw.Elapsed.TotalSeconds,2)) seconds for $env:CORPUS_COUNT images"
+          Write-Host "PHYSICAL CORPUS GATE PASSED: RapidOCR processed $($ocrRows.Count)/$expected images with 0 image errors."
+          "## Physical processing gate" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- **PASSED: $($ocrRows.Count) / $expected images processed, 0 image errors**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- OCR elapsed: **$([math]::Round($sw.Elapsed.TotalSeconds,2)) sec**" | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Score verified serial and model regression
+      - name: Build full-corpus diagnostic report
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path regression-results | Out-Null
@@ -152,42 +140,58 @@ jobs:
             --ground-truth data/Camera-Lab-Ground-Truth.csv `
             --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
             --images "$env:RESULT_DIR\RapidOCR_Images.csv" `
-            --out-dir regression-results `
-            --thresholds regression-thresholds.json
-          $exit = $LASTEXITCODE
+            --out-dir regression-results
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (Test-Path regression-results/Regression-Summary.md) {
-            "## Recognition regression (verified ground truth only)" | Add-Content $env:GITHUB_STEP_SUMMARY
+            "## Full-corpus diagnostic / verified-subset scoring" | Add-Content $env:GITHUB_STEP_SUMMARY
             Get-Content regression-results/Regression-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
           }
-          if ($exit -ne 0) { exit $exit }
 
-      - name: Score verified capacity extraction
-        if: always()
+      - name: Gate production serial no-regression baseline
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path regression-results | Out-Null
+          python scripts/serial_postprocess.py `
+            --ground-truth data/Camera-Lab-Ground-Truth.csv `
+            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
+            --images "$env:RESULT_DIR\RapidOCR_Images.csv" `
+            --out-dir regression-results
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $serial = Get-Content regression-results/Serial-Postprocess-Summary.json -Raw | ConvertFrom-Json
+          $pct = [double]$serial.corrected_pct
+          $n = [int]$serial.serial_n
+          $correct = [int]$serial.corrected_exact
+          $minimum = [double]$env:SERIAL_NO_REGRESSION_MIN_PCT
+          if ($n -le 0) { throw "Serial no-regression gate has no verified serial rows" }
+          if ($pct -lt $minimum) { throw "PRODUCTION SERIAL GATE FAILED: $correct/$n = $pct%, minimum is $minimum%" }
+          Write-Host "PRODUCTION SERIAL GATE PASSED: $correct/$n = $pct% (minimum $minimum%)"
+          "## Production serial no-regression gate" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- **PASSED: $correct / $n exact after conservative production corrections ($pct%)**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- Minimum allowed: **$minimum%**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          if (Test-Path regression-results/Serial-Postprocess-Summary.md) { Get-Content regression-results/Serial-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY }
+
+      - name: Score verified capacity extraction
+        shell: pwsh
+        run: |
           python scripts/capacity_postprocess.py `
             --ground-truth data/Camera-Lab-Ground-Truth.csv `
             --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
             --out-dir regression-results
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (Test-Path regression-results/Capacity-Postprocess-Summary.md) {
-            Get-Content regression-results/Capacity-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
-          }
+          if (Test-Path regression-results/Capacity-Postprocess-Summary.md) { Get-Content regression-results/Capacity-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY }
 
       - name: Report timing and coverage
         if: always()
         shell: pwsh
         run: |
-          $count = [double]$env:CORPUS_COUNT
-          $seconds = [double]$env:OCR_ELAPSED_SECONDS
+          $count = [double]$env:CORPUS_COUNT; $seconds = [double]$env:OCR_ELAPSED_SECONDS
           if ($count -gt 0 -and $seconds -gt 0) {
             $avg = [math]::Round($seconds / $count, 3)
-            "## Timing" | Add-Content $env:GITHUB_STEP_SUMMARY
+            "## Timing and scoring coverage" | Add-Content $env:GITHUB_STEP_SUMMARY
             "- OCR elapsed: **$seconds sec**" | Add-Content $env:GITHUB_STEP_SUMMARY
-            "- Physical images processed: **$env:CORPUS_COUNT**" | Add-Content $env:GITHUB_STEP_SUMMARY
+            "- Physical images processed: **$env:CORPUS_COUNT / $env:TARGET_CORPUS_COUNT**" | Add-Content $env:GITHUB_STEP_SUMMARY
             "- Average OCR time/image: **$avg sec**" | Add-Content $env:GITHUB_STEP_SUMMARY
-            "- Accuracy scoring coverage: **$env:GT_COUNT ground-truth rows**" | Add-Content $env:GITHUB_STEP_SUMMARY
+            "- Verified accuracy scoring rows: **$env:VERIFIED_GT_COUNT**" | Add-Content $env:GITHUB_STEP_SUMMARY
             "- Images awaiting trustworthy ground truth: **$env:UNSCORED_COUNT**" | Add-Content $env:GITHUB_STEP_SUMMARY
           }
 
