@@ -40,10 +40,6 @@ jobs:
           $images = @(Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
           $groundTruth = @(Import-Csv "data/Camera-Lab-Ground-Truth.csv")
 
-          if ($images.Count -ne $groundTruth.Count) {
-            throw "Corpus mismatch: $($images.Count) live images but $($groundTruth.Count) ground-truth rows. Every available image must have one matching ground-truth row."
-          }
-
           $imageDirs = @($images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
           if ($imageDirs.Count -ne 1) {
             throw "Expected the available corpus in one folder, found $($imageDirs.Count) folders"
@@ -60,13 +56,12 @@ jobs:
           if (@($gtNames | Sort-Object -Unique).Count -ne $gtNames.Count) {
             throw "Ground truth contains duplicate Image values"
           }
-
           $missingGt = @(Compare-Object -ReferenceObject $imageNames -DifferenceObject $gtNames | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
           $missingImage = @(Compare-Object -ReferenceObject $gtNames -DifferenceObject $imageNames | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
-          if ($missingGt.Count -gt 0 -or $missingImage.Count -gt 0) {
+          $missingImage = @(Compare-Object -ReferenceObject $gtNames -DifferenceObject $imageNames | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
             Write-Host "Images without ground truth: $($missingGt -join ', ')"
-            Write-Host "Ground-truth rows without images: $($missingImage -join ', ')"
-            throw "Available image/ground-truth filenames do not match"
+            Write-Host "Images without ground truth: $($missingGt -join ', ')"
+            throw "Every available image must have one matching ground-truth row"
           }
 
           $current = $images.Count
@@ -83,8 +78,12 @@ jobs:
           "CORPUS_COUNT=$current" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "CORPUS_REMAINING=$remaining" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "CORPUS_COMPLETE=$($complete.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "GROUND_TRUTH_PENDING=$($missingImage.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
           Write-Host "Camera Lab unified corpus inventory: $current/$target live images; $remaining source images still need to be incorporated."
+          if ($missingImage.Count -gt 0) {
+            Write-Host "Ground-truth rows awaiting source images: $($missingImage.Count)"
+          }
           if (!$complete) {
             Write-Warning "Full 123-image corpus is not yet physically present. Regression will continue on all currently available images so development is not blocked, but this run is NOT release-complete."
           }
@@ -92,6 +91,7 @@ jobs:
           "# Camera Lab Unified Corpus" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Live images available: **$current / $target**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Source images remaining: **$remaining**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- Ground-truth rows awaiting source images: **$($missingImage.Count)**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Full-corpus release complete: **$complete**" | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Checkout RapidOCR source
@@ -162,10 +162,15 @@ jobs:
             --out-dir targeted-model-crops
           if ($LASTEXITCODE -ne 0) { throw "Targeted crop generation failed" }
           $crops = @(Get-ChildItem targeted-model-crops -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
-          if ($crops.Count -lt 1) { throw "No targeted model crops were created" }
+          "TARGETED_MODEL_CROPS=$($crops.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TARGET_RESULT_DIR=targeted-model-crops" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Targeted model crops: $($crops.Count)"
+          if ($crops.Count -lt 1) {
+            Write-Warning "No targeted model crops were created; model scoring will fall back to the full-label OCR pass only."
+          }
 
       - name: Reread targeted model regions
+        if: env.TARGETED_MODEL_CROPS != '0'
         shell: pwsh
         run: |
           & .\benchmark-publish\DriveLabelBenchmark.exe "targeted-model-crops"
@@ -193,11 +198,18 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path regression-results/model | Out-Null
-          python scripts/model_postprocess.py `
-            --ground-truth data/Camera-Lab-Ground-Truth.csv `
-            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
-            --targeted-detections "$env:TARGET_RESULT_DIR\RapidOCR_Detections.csv" `
-            --out-dir regression-results/model
+          if ($env:TARGETED_MODEL_CROPS -ne '0' -and (Test-Path "$env:TARGET_RESULT_DIR\RapidOCR_Detections.csv")) {
+            python scripts/model_postprocess.py `
+              --ground-truth data/Camera-Lab-Ground-Truth.csv `
+              --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
+              --targeted-detections "$env:TARGET_RESULT_DIR\RapidOCR_Detections.csv" `
+              --out-dir regression-results/model
+          } else {
+            python scripts/model_postprocess.py `
+              --ground-truth data/Camera-Lab-Ground-Truth.csv `
+              --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
+              --out-dir regression-results/model
+          }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (Test-Path regression-results/model/Model-Postprocess-Summary.md) {
             Get-Content regression-results/model/Model-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY

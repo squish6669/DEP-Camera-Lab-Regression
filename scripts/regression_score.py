@@ -103,7 +103,8 @@ def main():
     det=defaultdict(list)
     with open(args.detections,encoding='utf-8-sig',newline='') as f:
         for r in csv.DictReader(f): det[pick(r,'FileName','Image','Filename')].append(r)
-    img={pick(r,'FileName','Image','Filename'):r for r in csv.DictReader(open(args.images,encoding='utf-8-sig',newline=''))}
+    with open(args.images,encoding='utf-8-sig',newline='') as f:
+        img={pick(r,'FileName','Image','Filename'):r for r in csv.DictReader(f)}
 
     rows=[]
     manuf=defaultdict(lambda: Counter())
