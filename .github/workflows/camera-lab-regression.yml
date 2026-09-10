@@ -72,7 +72,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Score regression
+      - name: Score serial and model regression
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path regression-results | Out-Null
@@ -87,6 +87,20 @@ jobs:
             Get-Content regression-results/Regression-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
           }
           if ($exit -ne 0) { exit $exit }
+
+      - name: Score capacity extraction
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path regression-results | Out-Null
+          python scripts/capacity_postprocess.py `
+            --ground-truth data/Camera-Lab-Ground-Truth.csv `
+            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
+            --out-dir regression-results
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path regression-results/Capacity-Postprocess-Summary.md) {
+            Get-Content regression-results/Capacity-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
 
       - name: Upload regression evidence
         if: always()
