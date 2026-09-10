@@ -103,7 +103,10 @@ def extract_candidates(blocks, manufacturer=''):
         elif 'SEAGATE' in man:
             model_rules=[r'ST(250|320|500|750|1000|2000|3000|4000)[A-Z0-9]*']
         elif 'HGST' in man or 'HITACHI' in man:
-            model_rules=[r'HTS[0-9A-Z]*(250|320|500|750|1000)']
+            # Do not infer capacity from generic HTS digits such as HTS7250: 7250 is a
+            # family / spindle-speed token, not a capacity value. HGST/Hitachi capacity
+            # must come from explicit printed capacity evidence or a future exact-model map.
+            model_rules=[]
         elif 'CRUCIAL' in man:
             model_rules=[r'CT(120|128|240|250|256|480|500|512|1000|2000)[A-Z0-9]*']
 
