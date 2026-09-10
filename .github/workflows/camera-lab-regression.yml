@@ -5,7 +5,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "Camera Roll.zip"
+      - "Camera Roll*.zip"
       - "scripts/**"
       - "data/**"
       - "regression-thresholds.json"
@@ -62,7 +62,7 @@ jobs:
           }
 
           $missingGt = @(Compare-Object -ReferenceObject $imageNames -DifferenceObject $gtNames | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
-          $missingImage = @(Compare-Object -ReferenceObject $imageNames -DifferenceObject $gtNames | Where-Object SideIndicator -eq '=>' | ForEach-Object InputObject)
+          $missingImage = @(Compare-Object -ReferenceObject $gtNames -DifferenceObject $imageNames | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
           if ($missingGt.Count -gt 0 -or $missingImage.Count -gt 0) {
             Write-Host "Images without ground truth: $($missingGt -join ', ')"
             Write-Host "Ground-truth rows without images: $($missingImage -join ', ')"
