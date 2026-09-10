@@ -46,7 +46,7 @@ If the workstation Camera Roll contains all source photos, the command finishes 
 
 ## Regression gate
 
-`regression-thresholds.json` protects the proven recognition baseline. The unified workflow reports physical corpus completeness independently from field accuracy so development can continue while recovered images are being visually verified.
+`regression-thresholds.json` protects the proven recognition baseline and now defines the active promotion gate: corrected serial, selected model, and capacity accuracy must each reach **97%**. The unified workflow still reports physical corpus completeness independently from field accuracy so development can continue while recovered images are being visually verified.
 
 ## Development loop
 
@@ -54,7 +54,9 @@ If the workstation Camera Roll contains all source photos, the command finishes 
 2. Patch model/capacity/serial extraction logic or RapidOCR integration.
 3. Push the patch.
 4. GitHub runs the available unified corpus automatically and reports 123-image completeness.
-5. Review regression summary, capacity summary, CSV, JSON, and timing artifacts.
-6. Repeat until accuracy and safety targets are reached.
+5. Review regression, serial, model, capacity, CSV, JSON, and timing artifacts together with the single promotion-gate summary.
+6. Repeat on the next code, model, or corpus change until every gated field reaches at least 97%.
+
+The evaluation loop runs on qualifying pushes, manual dispatch, and the weekly schedule. It is not an in-run endless retry loop; each run measures the current code/model/corpus state and reports whether promotion is ready.
 
 The County workstation is reserved for source-photo recovery plus final real-camera/WPF verification rather than being required for every development iteration.

@@ -125,6 +125,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Python imaging dependency
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pillow
+
       - name: Score serial and model regression
         shell: pwsh
         run: |
@@ -142,6 +147,56 @@ jobs:
           }
           if ($exit -ne 0) { exit $exit }
 
+      - name: Create targeted model crops
+        shell: pwsh
+        run: |
+          python scripts/model_target_crop.py `
+            --images "$env:IMAGE_DIR" `
+            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
+            --out-dir targeted-model-crops
+          if ($LASTEXITCODE -ne 0) { throw "Targeted crop generation failed" }
+          $crops = @(Get-ChildItem targeted-model-crops -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($crops.Count -lt 1) { throw "No targeted model crops were created" }
+          Write-Host "Targeted model crops: $($crops.Count)"
+
+      - name: Reread targeted model regions
+        shell: pwsh
+        run: |
+          & .\benchmark-publish\DriveLabelBenchmark.exe "targeted-model-crops"
+          $exit = $LASTEXITCODE
+          if ($exit -ne 0) { throw "Targeted model reread exited with code $exit" }
+          $target = Get-ChildItem "targeted-model-crops" -Directory -Filter "RapidOCR_Benchmark_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$target) { throw "Targeted model reread output folder not found" }
+          "TARGET_RESULT_DIR=$($target.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Score corrected serial extraction
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path regression-results/serial | Out-Null
+          python scripts/serial_postprocess.py `
+            --ground-truth data/Camera-Lab-Ground-Truth.csv `
+            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
+            --images "$env:RESULT_DIR\RapidOCR_Images.csv" `
+            --out-dir regression-results/serial
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path regression-results/serial/Serial-Postprocess-Summary.md) {
+            Get-Content regression-results/serial/Serial-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Score corrected model extraction
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path regression-results/model | Out-Null
+          python scripts/model_postprocess.py `
+            --ground-truth data/Camera-Lab-Ground-Truth.csv `
+            --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" `
+            --targeted-detections "$env:TARGET_RESULT_DIR\RapidOCR_Detections.csv" `
+            --out-dir regression-results/model
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path regression-results/model/Model-Postprocess-Summary.md) {
+            Get-Content regression-results/model/Model-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
       - name: Score capacity extraction
         if: always()
         shell: pwsh
@@ -155,6 +210,54 @@ jobs:
           if (Test-Path regression-results/Capacity-Postprocess-Summary.md) {
             Get-Content regression-results/Capacity-Postprocess-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
           }
+
+      - name: Enforce promotion gate
+        if: always()
+        shell: pwsh
+        run: |
+          if (!(Test-Path regression-results/Regression-Summary.json)) { throw "Regression summary is missing" }
+          if (!(Test-Path regression-results/serial/Serial-Postprocess-Summary.json)) { throw "Serial summary is missing" }
+          if (!(Test-Path regression-results/model/Model-Postprocess-Summary.json)) { throw "Model summary is missing" }
+          if (!(Test-Path regression-results/Capacity-Postprocess-Summary.json)) { throw "Capacity summary is missing" }
+
+          $thresholds = Get-Content regression-thresholds.json | ConvertFrom-Json
+          $release = $thresholds.release_minimums
+          $baseline = (Get-Content regression-results/Regression-Summary.json | ConvertFrom-Json).metrics
+          $serial = Get-Content regression-results/serial/Serial-Postprocess-Summary.json | ConvertFrom-Json
+          $model = Get-Content regression-results/model/Model-Postprocess-Summary.json | ConvertFrom-Json
+          $capacity = Get-Content regression-results/Capacity-Postprocess-Summary.json | ConvertFrom-Json
+
+          $checks = @(
+            @{ Name = 'Corrected serial exact'; Actual = [double]$serial.corrected_pct; Required = [double]$release.serial_corrected_pct },
+            @{ Name = 'Selected model exact'; Actual = [double]$model.selected_pct; Required = [double]$release.model_selected_pct },
+            @{ Name = 'Capacity exact'; Actual = [double]$capacity.capacity_pct; Required = [double]$release.capacity_pct }
+          )
+
+          $failed = @()
+          "## Promotion gate" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "| Metric | Actual | Required | Status |" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "|---|---:|---:|---|" | Add-Content $env:GITHUB_STEP_SUMMARY
+          foreach ($check in $checks) {
+            $pass = $check.Actual -ge $check.Required
+            if (!$pass) { $failed += "$($check.Name)=$($check.Actual)% < $($check.Required)%" }
+            $status = if ($pass) { "PASS" } else { "FAIL" }
+            "| $($check.Name) | $([math]::Round($check.Actual,1))% | $([math]::Round($check.Required,1))% | $status |" | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
+          $baselinePass = ([int]$baseline.errors -le [int]$thresholds.maximums.errors)
+          $baselineStatus = if ($baselinePass) { "PASS" } else { "FAIL" }
+          "| OCR errors | $([int]$baseline.errors) | <= $([int]$thresholds.maximums.errors) | $baselineStatus |" | Add-Content $env:GITHUB_STEP_SUMMARY
+          if (!$baselinePass) { $failed += "errors=$([int]$baseline.errors) > $([int]$thresholds.maximums.errors)" }
+
+          "- Corpus completeness: **$env:CORPUS_COUNT / $env:TARGET_CORPUS_COUNT** (full corpus complete: **$env:CORPUS_COMPLETE**)" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- Evaluation loop: reruns on qualifying pushes, manual dispatch, and the weekly schedule; it does not self-loop within a single run." | Add-Content $env:GITHUB_STEP_SUMMARY
+
+          if ($failed.Count -gt 0) {
+            "- Promotion status: **NOT READY**" | Add-Content $env:GITHUB_STEP_SUMMARY
+            throw ("Promotion gate failed: " + ($failed -join '; '))
+          }
+
+          "- Promotion status: **READY FOR 97% TARGET PROMOTION**" | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Report timing and release completeness
         if: always()
@@ -182,8 +285,12 @@ jobs:
           name: Camera-Lab-Unified-Regression-${{ github.run_number }}
           path: |
             regression-results/**
+            targeted-model-crops/Targeted-Crops.csv
             ${{ env.RESULT_DIR }}/RapidOCR_Images.csv
             ${{ env.RESULT_DIR }}/RapidOCR_Detections.csv
             ${{ env.RESULT_DIR }}/RapidOCR_Results.json
+            ${{ env.TARGET_RESULT_DIR }}/RapidOCR_Images.csv
+            ${{ env.TARGET_RESULT_DIR }}/RapidOCR_Detections.csv
+            ${{ env.TARGET_RESULT_DIR }}/RapidOCR_Results.json
           if-no-files-found: warn
           retention-days: 30

@@ -4,8 +4,14 @@
     "raw_serial_near1": 53,
     "raw_model_exact": 49
   },
+  "release_minimums": {
+    "serial_corrected_pct": 97.0,
+    "model_selected_pct": 97.0,
+    "capacity_pct": 97.0
+  },
   "maximums": {
     "errors": 0
   },
-  "notes": "Baseline established from the proven 68-image RapidOCR run; extractor accuracy may improve independently."
+  "notes": "Baseline established from the proven 68-image RapidOCR run; extractor accuracy may improve independently.",
+  "release_notes": "Promotion now requires at least 97% corrected serial, selected model, and capacity accuracy on the current corpus. The workflow reruns on qualifying pushes, manual dispatch, and the weekly schedule; it does not self-loop within a single run."
 }
