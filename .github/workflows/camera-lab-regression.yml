@@ -123,23 +123,25 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Publish benchmark runner
+      - name: Publish pinned 2048 OCR runner
         shell: pwsh
         run: |
-          dotnet publish RapidOCRCSharp/DriveLabelBenchmark/DriveLabelBenchmark.csproj -c Release -r win-x64 --self-contained true -o benchmark-publish
-          New-Item -ItemType Directory -Force -Path benchmark-publish/models | Out-Null
-          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* benchmark-publish/models -Recurse -Force
+          dotnet publish RapidOCRCSharp/DriveLabelSweep/DriveLabelSweep.csproj -c Release -r win-x64 --self-contained true -o sweep-publish
+          New-Item -ItemType Directory -Force -Path sweep-publish/models | Out-Null
+          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* sweep-publish/models -Recurse -Force
 
-      - name: Run RapidOCR on unified corpus
+      - name: Run RapidOCR at proven 2048 resolution on unified corpus
         shell: pwsh
         run: |
           $sw = [Diagnostics.Stopwatch]::StartNew()
-          & .\benchmark-publish\DriveLabelBenchmark.exe "$env:IMAGE_DIR"
+          & .\sweep-publish\DriveLabelSweep.exe "$env:IMAGE_DIR" "2048"
           $exit = $LASTEXITCODE; $sw.Stop()
-          if ($exit -ne 0) { throw "Benchmark exited with code $exit" }
-          $result = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Benchmark_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (!$result) { throw "Benchmark output folder not found" }
-          $imageCsv = Join-Path $result.FullName "RapidOCR_Images.csv"
+          if ($exit -ne 0) { throw "2048 OCR sweep exited with code $exit" }
+          $sweep = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$sweep) { throw "2048 OCR sweep output folder not found" }
+          $result = Join-Path $sweep.FullName "maxSideLen_2048"
+          if (!(Test-Path $result)) { throw "2048 OCR result folder not found" }
+          $imageCsv = Join-Path $result "RapidOCR_Images.csv"
           if (!(Test-Path $imageCsv)) { throw "RapidOCR_Images.csv was not produced" }
           $ocrRows = @(Import-Csv $imageCsv)
           $expectedOcr = [int]$env:OCR_INPUT_COUNT; $invalidCount = [int]$env:INVALID_IMAGE_COUNT; $target = [int]$env:TARGET_CORPUS_COUNT
@@ -147,10 +149,11 @@ jobs:
           $ocrErrors = @($ocrRows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Error) })
           if ($ocrErrors.Count -gt 0) { throw "RapidOCR reported $($ocrErrors.Count) runtime image errors" }
           if (($ocrRows.Count + $invalidCount) -ne $target) { throw "Unified corpus accounting failure after OCR" }
-          "RESULT_DIR=$($result.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "RESULT_DIR=$result" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "OCR_ELAPSED_SECONDS=$([math]::Round($sw.Elapsed.TotalSeconds,2))" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "## Physical processing gate" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- OCR processed: **$($ocrRows.Count) / $target**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- OCR resolution: **maxSideLen 2048**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- Quarantined before OCR: **$invalidCount**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- OCR runtime errors: **0**" | Add-Content $env:GITHUB_STEP_SUMMARY
           "- OCR elapsed: **$([math]::Round($sw.Elapsed.TotalSeconds,2)) sec**" | Add-Content $env:GITHUB_STEP_SUMMARY
