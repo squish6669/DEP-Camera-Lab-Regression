@@ -76,11 +76,29 @@ def extract_candidates(blocks, manufacturer=''):
             elif gb == 4096: gb=4000
             add_candidate(out,gb,72+base,'explicit-capacity-token',m.group(0),conf)
 
+        # OCR commonly reads the B in a standalone GB token as 8. Only accept this
+        # when the numeric part is itself a canonical capacity and the token is
+        # bounded, so serial/model substrings cannot become generic capacity evidence.
+        for m in re.finditer(r'(?<![A-Z0-9])(\d{2,4})G8(?![A-Z0-9])', text):
+            gb=int(m.group(1))
+            if gb in COMMON_GB:
+                add_candidate(out,gb,70+base,'explicit-capacity-token-ocr-gb',m.group(0),conf)
+
         # Labels often print capacity immediately after words such as CAPACITY/CAP.
         for m in re.finditer(r'\b(?:CAPACITY|CAP|SIZE)\s*[:#-]?\s*(\d{2,4})\s*(?:GB|G)?\b',text):
             add_candidate(out,int(m.group(1)),83+base,'capacity-anchor',m.group(0),conf)
 
         compact=re.sub(r'[^A-Z0-9]','',text)
+
+        # Repair a very small set of vendor/model OCR confusions before matching.
+        # These substitutions are vendor-bounded and affect capacity inference only.
+        model_compact=compact
+        if 'INTEL' in man:
+            model_compact=re.sub(r'SSDPEMKF258(?=G|$)','SSDPEMKF256',model_compact)
+        elif 'TOSHIBA' in man or 'KIOXIA' in man:
+            model_compact=re.sub(r'(KXG[0-9A-Z]{2}ZNV)258(?=G|$)',r'\g<1>256',model_compact)
+            model_compact=re.sub(r'(KSG[0-9A-Z]{2}ZMV)258(?=G|$)',r'\g<1>256',model_compact)
+            model_compact=re.sub(r'(KXG[0-9A-Z]{2})ZNN(?=128|256|512|1000|1024)',r'\g<1>ZNV',model_compact)
 
         # Capacity encoded in well-known model families. This is intentionally vendor-bounded.
         model_rules=[]
@@ -103,15 +121,17 @@ def extract_candidates(blocks, manufacturer=''):
         elif 'SEAGATE' in man:
             model_rules=[r'ST(250|320|500|750|1000|2000|3000|4000)[A-Z0-9]*']
         elif 'HGST' in man or 'HITACHI' in man:
-            # Do not infer capacity from generic HTS digits such as HTS7250: 7250 is a
-            # family / spindle-speed token, not a capacity value. HGST/Hitachi capacity
-            # must come from explicit printed capacity evidence or a future exact-model map.
+            # Do not infer from generic HTS family digits such as HTS7250. Accept only
+            # explicit vendor label anchors whose terminal token is a canonical capacity,
+            # e.g. "HDD:Z7K320-320" or "TYPE TT7SAB320".
+            for m in re.finditer(r'\b(?:HDD|TYPE)\s*[:#-]?\s*[A-Z0-9-]*?(250|320|500|750|1000|2000)\b',text):
+                add_candidate(out,int(m.group(1)),82+base,'hgst-capacity-anchor',m.group(0),conf)
             model_rules=[]
         elif 'CRUCIAL' in man:
             model_rules=[r'CT(120|128|240|250|256|480|500|512|1000|2000)[A-Z0-9]*']
 
         for pat in model_rules:
-            for m in re.finditer(pat,compact):
+            for m in re.finditer(pat,model_compact):
                 vals=[g for g in m.groups() if g]
                 if vals:
                     add_candidate(out,int(vals[-1]),68+base,'vendor-model-capacity',m.group(0),conf)
@@ -128,6 +148,8 @@ def extract_candidates(blocks, manufacturer=''):
     for c in out: kinds[c['gb']].add(c['reason'])
     for c in out:
         if 'explicit-capacity-token' in kinds[c['gb']] and 'vendor-model-capacity' in kinds[c['gb']]:
+            c['score']=min(100,c['score']+8)
+        if 'explicit-capacity-token-ocr-gb' in kinds[c['gb']] and 'vendor-model-capacity' in kinds[c['gb']]:
             c['score']=min(100,c['score']+8)
 
     best={}
