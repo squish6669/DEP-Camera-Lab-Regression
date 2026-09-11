@@ -207,6 +207,17 @@ jobs:
             "- Images awaiting trustworthy ground truth: **$env:UNSCORED_COUNT**" | Add-Content $env:GITHUB_STEP_SUMMARY
           }
 
+      - name: Stage OCR evidence
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:RESULT_DIR -and (Test-Path $env:RESULT_DIR)) {
+            foreach ($name in @('RapidOCR_Images.csv','RapidOCR_Detections.csv','RapidOCR_Results.json')) {
+              $src = Join-Path $env:RESULT_DIR $name
+              if (Test-Path $src) { Copy-Item -LiteralPath $src -Destination (Join-Path regression-results $name) -Force }
+            }
+          }
+
       - name: Upload regression evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -215,8 +226,5 @@ jobs:
           path: |
             regression-results/**
             regression-invalid/**
-            ${{ env.RESULT_DIR }}/RapidOCR_Images.csv
-            ${{ env.RESULT_DIR }}/RapidOCR_Detections.csv
-            ${{ env.RESULT_DIR }}/RapidOCR_Results.json
           if-no-files-found: warn
           retention-days: 30
