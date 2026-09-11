@@ -4,6 +4,7 @@ from pathlib import Path
 from PIL import Image,ImageOps,ImageEnhance,ImageFilter
 
 ANCHOR_RE=re.compile(r'(?i)\b(?:MODEL|MDL|MODE[1ILU])\b')
+PRODUCT_LINE_RE=re.compile(r'(?i)\bX110\b')
 FAMILY_RE=re.compile(r'(?i)(?:MZV|MZ7|SSDPE|KXG|KSG|SDBQ|WD\d|SD6|LJT|LCH|ST\d|HTS|MHV|MTFD|HFM|CT\d)')
 
 
@@ -24,6 +25,10 @@ def score_block(row):
     t=row.get('Text') or ''
     b=box(row.get('Coordinates'))
     if not b: return None
+    # X110 is an explicit SanDisk retail/model-line marker. Prefer that label line over
+    # regulatory SD6-family text when both are visible so the reread crop stays on the
+    # product/model area instead of drifting to the certification line below it.
+    if PRODUCT_LINE_RE.search(t): return (4,b,t)
     if ANCHOR_RE.search(t): return (3,b,t)
     if FAMILY_RE.search(t): return (2,b,t)
     return None
@@ -54,9 +59,9 @@ def main():
         with Image.open(src) as im:
             w,h=im.size
             bh=max(12,y2-y1)
-            # Keep explicit MODEL anchors tight. Family-only anchors are weaker and can sit on a
-            # regulatory line below the actual retail/model line, so include more label context
-            # above them without changing any model/serial acceptance rule.
+            # Keep explicit MODEL/product-line anchors tight. Family-only anchors are weaker
+            # and can sit on a regulatory line below the actual retail/model line, so include
+            # more label context above them without changing any model/serial acceptance rule.
             left=max(0,int(x1-max(80,w*0.05)))
             right=min(w,int(max(x2+max(160,w*0.18), x1+w*0.62)))
             if tier==2:
@@ -76,7 +81,8 @@ def main():
                 scale=min(2.5,1800/max(1,crop.width))
                 crop=crop.resize((int(crop.width*scale),int(crop.height*scale)),Image.Resampling.LANCZOS)
             crop.save(out/fn,quality=95)
-        rows.append((fn,'anchor' if tier==3 else 'family',left,top,right,bottom,' | '.join(s[2] for s in chosen[:3])))
+        trigger='product-line' if tier==4 else ('anchor' if tier==3 else 'family')
+        rows.append((fn,trigger,left,top,right,bottom,' | '.join(s[2] for s in chosen[:3])))
 
     with open(out/'Targeted-Crops.csv','w',encoding='utf-8-sig',newline='') as f:
         w=csv.writer(f); w.writerow(['FileName','Trigger','Left','Top','Right','Bottom','Evidence']); w.writerows(rows)
