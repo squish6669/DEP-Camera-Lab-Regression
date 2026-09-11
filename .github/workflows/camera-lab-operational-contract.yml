@@ -51,5 +51,7 @@ jobs:
           contract-test.jpg,ABC123456,DS-13
           '@ | Set-Content -Encoding utf8 invalid-assignment.csv
           python scripts/operational_records.py --inference inference.csv --destruction-assignments invalid-assignment.csv --out-dir invalid-results
-          if ($LASTEXITCODE -eq 0) { throw "Invalid DS-13 assignment was accepted" }
+          $expectedFailure = $LASTEXITCODE
+          if ($expectedFailure -eq 0) { throw "Invalid DS-13 assignment was accepted" }
+          $global:LASTEXITCODE = 0
           Write-Host "Invalid DS-13 correctly rejected; allowed range remains DS-01 through DS-12."
