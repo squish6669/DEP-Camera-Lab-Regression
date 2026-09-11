@@ -54,12 +54,19 @@ def main():
         with Image.open(src) as im:
             w,h=im.size
             bh=max(12,y2-y1)
-            # Keep the model line plus neighboring text to the right/left. This is deliberately
-            # much tighter vertically than a full-label pass so character pixels get more OCR budget.
+            # Keep explicit MODEL anchors tight. Family-only anchors are weaker and can sit on a
+            # regulatory line below the actual retail/model line, so include more label context
+            # above them without changing any model/serial acceptance rule.
             left=max(0,int(x1-max(80,w*0.05)))
             right=min(w,int(max(x2+max(160,w*0.18), x1+w*0.62)))
-            top=max(0,int(y1-max(45,bh*2.0)))
-            bottom=min(h,int(y2+max(55,bh*2.5)))
+            if tier==2:
+                top_pad=max(160,bh*6.0)
+                bottom_pad=max(80,bh*3.0)
+            else:
+                top_pad=max(45,bh*2.0)
+                bottom_pad=max(55,bh*2.5)
+            top=max(0,int(y1-top_pad))
+            bottom=min(h,int(y2+bottom_pad))
             crop=im.crop((left,top,right,bottom)).convert('L')
             crop=ImageOps.autocontrast(crop,cutoff=0.5)
             crop=ImageEnhance.Contrast(crop).enhance(1.35)
