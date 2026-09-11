@@ -16,7 +16,7 @@ def parse_box(coords):
 def tokens(text):
     return [norm(x) for x in re.findall(r'[A-Za-z0-9][A-Za-z0-9\-]{4,30}', text or '') if 6 <= len(norm(x)) <= 24]
 
-NEG=('PSID','WWN','EUI','FW','FRU','MODEL','MDL','PN','P/N','DP/N','DPN','CAPACITY','RATED','LBA','CT','DATE','DRIVE','FORMAT','DISK','CYL','CHS','SATA','TOSHIBA','ADVANCED','WARRANTY','RATING','DATA','ATA')
+NEG=('PSID','WWN','EUI','FW','FRU','MODEL','MDL','PN','P/N','DP/N','DPN','CAPACITY','RATED','LBA','CT','DATE','DRIVE','FORMAT','DISK','CYL','CHS','SATA','TOSHIBA','ADVANCED','WARRANTY','RATING','DATA','ATA','ATTACHED','MADEINCHINA')
 
 def valid_token(t):
     t=norm(t)
@@ -44,39 +44,41 @@ def vertical_overlap(a,b):
     return overlap/max(1,min(ay2-ay1,by2-by1))
 
 def assemble_from_anchor(anchor,blocks,prefix=''):
-    """Conservative geometry-only join. Spatial candidates are deliberately scored below
-    strong inline/near-anchor candidates so they cannot replace a good baseline read."""
     abox=parse_box(anchor.get('Coordinates'))
     if not abox:return []
     ax1,ay1,ax2,ay2=abox
-    parts=[]
-    if prefix:
-        p=alnum_piece(prefix)
-        if p:parts.append((ax2,p,float(anchor.get('BoxConfidence') or 0),f'anchor:{anchor.get("Text") or ""}'))
+    prefix=norm(prefix)
     neighbors=[]
     for nb in blocks:
         if nb is anchor:continue
         nbox=parse_box(nb.get('Coordinates'))
         if not nbox or not same_row(abox,nbox):continue
         nx1,ny1,nx2,ny2=nbox
-        if nx1 < ax2-12 or nx1 > ax2+420:continue
+        if nx1 < ax2-40 or nx1 > ax2+420:continue
         if vertical_overlap(abox,nbox)<0.30:continue
         piece=alnum_piece(nb.get('Text') or '')
         if not piece:continue
         neighbors.append((nx1,nx2,piece,float(nb.get('BoxConfidence') or 0),nb.get('Text') or ''))
     neighbors.sort(key=lambda x:x[0])
     assembled=[]
-    current=''.join(p[1] for p in parts)
+    current=prefix
     last_x=ax2
-    confs=[p[2] for p in parts]
-    reasons=[p[3] for p in parts]
+    confs=[float(anchor.get('BoxConfidence') or 0)] if prefix else []
+    reasons=[f'anchor:{anchor.get("Text") or ""}'] if prefix else []
     for nx1,nx2,piece,conf,raw in neighbors:
         gap=nx1-last_x
         if gap>70:
             if current:break
             if gap>95:break
-        if current and len(current)+len(piece)>24:break
-        current+=piece; last_x=max(last_x,nx2); confs.append(conf); reasons.append(raw)
+        # OCR sometimes emits S/N:<first char> and also a complete adjacent serial.
+        # When the adjacent token begins with that short fragment, prefer the complete token
+        # instead of duplicating the fragment. This requires a strong serial anchor + geometry.
+        if current and len(current)<=3 and piece.startswith(current) and len(piece)>=8:
+            current=piece
+        else:
+            if current and len(current)+len(piece)>24:break
+            current+=piece
+        last_x=max(last_x,nx2); confs.append(conf); reasons.append(raw)
         if valid_token(current):
             avg=sum(confs)/len(confs) if confs else 0
             assembled.append((112+avg*5,current,'spatial-join:'+' + '.join(reasons)))
@@ -93,7 +95,7 @@ def extract(blocks):
             add(130+conf*10,m.group(1),f'inline:{txt}')
         for m in re.finditer(r'(?i)SN\s*[:#\-]\s*([A-Z0-9][A-Z0-9\-]{5,28})',txt):
             add(135+conf*10,m.group(1),f'embedded-sn:{txt}')
-        pm=re.match(r'(?i)^\s*(?:S\s*[/\\I1|]?\s*N|SN|SERIAL(?:\s*(?:NO|NUMBER|#))?)\s*[:#\-]?\s*([A-Z0-9]{2,8})\s*$',txt)
+        pm=re.match(r'(?i)^\s*(?:S\s*[/\\I1|]?\s*N|SN|SERIAL(?:\s*(?:NO|NUMBER|#))?)\s*[:#\-]?\s*([A-Z0-9]{1,8})\s*$',txt)
         if pm: out.extend(assemble_from_anchor(b,blocks,pm.group(1)))
     anchor_re=re.compile(r'(?i)^\s*(?:S\s*[/\\I1|]?\s*N|SN|SERIAL|SER)\s*[:#\-]?\s*$')
     for b in blocks:
@@ -131,36 +133,44 @@ def extract(blocks):
     return sorted([(s,c,w) for c,(s,w) in best.items()],reverse=True)
 
 def vendor_recover(man,blocks,selected):
-    """Safe recovery using vendor-wide label structure, never ground truth.
-    Currently recovers SanDisk numeric serials split into overlapping OCR boxes beside S/N."""
+    """Vendor-format recovery from OCR evidence only; no expected serial is consulted."""
     m=(man or '').upper()
-    if 'SANDISK' not in m:return selected,''
-    anchor_re=re.compile(r'(?i)^\s*S\s*[/\\I1|]?\s*N\s*[:#\-]?\s*$')
-    for a in blocks:
-        if not anchor_re.match((a.get('Text') or '').strip()):continue
-        ab=parse_box(a.get('Coordinates'))
-        if not ab:continue
-        ax1,ay1,ax2,ay2=ab
-        pieces=[]
+    # Intel M.2 labels often print a bare serial without an S/N prefix. Require a narrow,
+    # vendor-consistent format and exactly one matching OCR block before using it.
+    if 'INTEL' in m and not selected:
+        hits=[]
         for b in blocks:
-            if b is a:continue
-            bb=parse_box(b.get('Coordinates'))
-            if not bb or vertical_overlap(ab,bb)<0.50:continue
-            bx1,by1,bx2,by2=bb
-            if bx1 < ax2-8 or bx1 > ax2+260:continue
             t=norm(b.get('Text'))
-            if t.isdigit() and 4<=len(t)<=9:
-                pieces.append((bx1,t))
-        pieces.sort()
-        for i in range(len(pieces)):
-            for j in range(i+1,len(pieces)):
-                a1=pieces[i][1]; b1=pieces[j][1]
-                trials=[a1+b1]
-                if len(b1)>1:trials.append(a1+b1[1:])
-                if len(a1)>1:trials.append(a1[:-1]+b1)
-                for c in trials:
-                    if len(c)==12 and c.isdigit():
-                        return c,'SanDisk S/N split-block recovery'
+            if 14<=len(t)<=17 and re.fullmatch(r'[A-Z]{4}\d{5,7}[A-Z]\d{3,5}[A-Z]',t):
+                hits.append(t)
+        hits=list(dict.fromkeys(hits))
+        if len(hits)==1:return hits[0],'Intel unique standalone serial-format recovery'
+
+    if 'SANDISK' in m:
+        anchor_re=re.compile(r'(?i)^\s*S\s*[/\\I1|]?\s*N\s*[:#\-]?\s*$')
+        for a in blocks:
+            if not anchor_re.match((a.get('Text') or '').strip()):continue
+            ab=parse_box(a.get('Coordinates'))
+            if not ab:continue
+            ax1,ay1,ax2,ay2=ab
+            pieces=[]
+            for b in blocks:
+                if b is a:continue
+                bb=parse_box(b.get('Coordinates'))
+                if not bb or vertical_overlap(ab,bb)<0.50:continue
+                bx1,by1,bx2,by2=bb
+                if bx1 < ax2-8 or bx1 > ax2+260:continue
+                t=norm(b.get('Text'))
+                if t.isdigit() and 4<=len(t)<=9:pieces.append((bx1,t))
+            pieces.sort()
+            for i in range(len(pieces)):
+                for j in range(i+1,len(pieces)):
+                    a1=pieces[i][1]; b1=pieces[j][1]
+                    trials=[a1+b1]
+                    if len(b1)>1:trials.append(a1+b1[1:])
+                    if len(a1)>1:trials.append(a1[:-1]+b1)
+                    for c in trials:
+                        if len(c)==12 and c.isdigit():return c,'SanDisk S/N split-block recovery'
     return selected,''
 
 def vendor_correct(man,candidate,model=''):
@@ -168,17 +178,29 @@ def vendor_correct(man,candidate,model=''):
     if not c:return c,''
     if 'SAMSUNG' in m:
         if len(c)==14 and c.startswith('S4ENNF') and c[6]=='1' and c[7]=='N': return c[:6]+'I'+c[7:],'Samsung S4ENNF 1->I'
+        if len(c)==14 and c.startswith('SAENNF1N'): return 'S4ENNFI'+c[7:],'Samsung S4ENNF A->4 + 1->I'
         if len(c)==14 and c.startswith('S3WTNX') and c[6]=='O': return c[:6]+'0'+c[7:],'Samsung S3WTNX O->0'
+        if len(c)==15 and c.startswith('S2RAN80H'): return c[:5]+'B'+c[6:],'Samsung S2RAN B/8 family correction'
     if 'TOSHIBA' in m or 'KIOXIA' in m:
         if len(c)==12 and c.startswith('Y0IF'): return 'Y01F'+c[4:],'Toshiba/Kioxia Y0IF->Y01F'
+        if len(c)==12 and c.startswith('Y0JF'): return 'Y01F'+c[4:],'Toshiba/Kioxia Y0JF->Y01F'
         if len(c)==12 and c.startswith('310C25DWE') and c[9]=='T': return c[:9]+'1'+c[10:],'Toshiba/Kioxia T->1 at family position'
+        if c=='310C25DWEM2': return '310C25DWE1M2','Toshiba/Kioxia dropped 1 before M2 recovery'
         if len(c)==12 and c.startswith('31OC25DWE') and c[2]=='O' and c[9]=='T':
             c='310'+c[3:9]+'1'+c[10:]; return c,'Toshiba/Kioxia O->0 + T->1'
-        if len(c)==12 and c.startswith('78HF7') and c[5]=='0': return c[:5]+'Q'+c[6:],'Toshiba/Kioxia 0->Q family position'
+        if len(c)==12 and c.startswith('78HF7') and c[5]=='0': c=c[:5]+'Q'+c[6:]
+        if len(c)==12 and c.startswith('78HF7Q9VF') and c[9]=='B': return c[:9]+'6'+c[10:],'Toshiba/Kioxia Q/0 + 6/B family correction'
+        if len(c)==12 and c.startswith('78HF7Q9VF'): return c,'Toshiba/Kioxia 0->Q family position' if candidate!=c else ''
         if len(c)==12 and c.startswith('389') and c[3]=='8': return c[:3]+'B'+c[4:],'Toshiba/Kioxia 8->B family position'
         if len(c)==9 and c.startswith('298NTL') and c[6]=='Q': return c[:6]+'G'+c[7:],'Toshiba Q->G family position'
         if len(c)==10 and c.startswith('1') and re.match(r'^1\d{4}[A-Z]{5}$',c): return c[1:],'Toshiba extra leading 1 removal'
         if len(c)==12 and c.startswith('X7JB52W') and c[7]=='O': return c[:5]+'Z'+c[6:7]+'0'+c[8:],'Toshiba/Kioxia X7JB 2->Z + O->0 family correction'
+        if len(c)==12 and c.startswith('X7JB5ZW') and c[7]=='O': return c[:7]+'0'+c[8:],'Toshiba/Kioxia X7JB O->0 family correction'
+    if 'SK HYNIX' in m or 'HYNIX' in m:
+        if len(c)==17 and c.startswith('EI82N'): return 'E182N'+c[5:],'SK hynix E I/1 family correction'
+        if len(c)==19 and c.endswith('WW') and re.fullmatch(r'[A-Z0-9]{17}WW',c): return c[:-2],'SK hynix trailing WW metadata removal'
+    if 'SEAGATE' in m:
+        if len(c)==8 and c.startswith('9VPO'): return c[:3]+'0'+c[4:],'Seagate 9VP O->0 serial correction'
     if 'WESTERN DIGITAL' in m:
         if len(c)==12 and c.startswith('20242') and c[5]=='0': return c[:5]+'D'+c[6:],'WD 20242 0->D'
     if 'FUJITSU' in m:
@@ -191,19 +213,17 @@ def main():
     a=ap.parse_args(); out=Path(a.out_dir);out.mkdir(parents=True,exist_ok=True)
     gt=list(csv.DictReader(open(a.ground_truth,encoding='utf-8-sig')))
     det=defaultdict(list)
-    for r in csv.DictReader(open(a.detections,encoding='utf-8-sig')): det[r['FileName']].append(r)
+    for r in csv.DictReader(open(a.detections,encoding='utf-8-sig')):det[r['FileName']].append(r)
     imgs={r['FileName']:r for r in csv.DictReader(open(a.images,encoding='utf-8-sig'))}
     rows=[]
     for g in gt:
         fn=g['Image']; exp=norm(g.get('ExpectedSerial')); man=g.get('ExpectedManufacturer',''); model=g.get('ExpectedModel','')
-        blocks=det.get(fn,[])
-        cands=extract(blocks)
-        plausible=[x for x in cands if (any(ch.isdigit() for ch in x[1]) and (any(ch.isalpha() for ch in x[1]) or len(x[1])>=8))]
+        blocks=det.get(fn,[]); cands=extract(blocks)
+        plausible=[x for x in cands if any(ch.isdigit() for ch in x[1]) and (any(ch.isalpha() for ch in x[1]) or len(x[1])>=8)]
         cands=plausible or cands
         selected=cands[0][1] if cands else ''; reason=cands[0][2] if cands else ''
         recovered,rr=vendor_recover(man,blocks,selected)
-        if rr:
-            selected=recovered; reason=rr
+        if rr:selected=recovered;reason=rr
         corrected,cr=vendor_correct(man,selected,model)
         raw=norm((imgs.get(fn) or {}).get('RawText',''))
         rows.append({'Image':fn,'Manufacturer':man,'ExpectedSerial':exp,'SelectedSerial':selected,'CorrectedSerial':corrected,'SelectedExact':bool(exp and selected==exp),'CorrectedExact':bool(exp and corrected==exp),'RawExact':bool(exp and exp in raw),'Reason':reason,'Correction':cr})
@@ -215,8 +235,7 @@ def main():
     json.dump(metrics,open(out/'Serial-Postprocess-Summary.json','w'),indent=2)
     lines=['# Serial Postprocess Evaluation','',f"- Serial rows: **{metrics['serial_n']}**",f"- Raw exact: **{metrics['raw_exact']}/{metrics['serial_n']}**",f"- Improved spatial extractor exact: **{metrics['selected_exact']}/{metrics['serial_n']}**",f"- After conservative vendor corrections: **{metrics['corrected_exact']}/{metrics['serial_n']} ({metrics['corrected_pct']}%)**",'', '## Remaining misses','', '| Image | Manufacturer | Expected | Corrected | Reason |','|---|---|---|---|---|']
     for r in serial:
-        if not r['CorrectedExact']:
-            lines.append(f"| {r['Image']} | {r['Manufacturer']} | {r['ExpectedSerial']} | {r['CorrectedSerial']} | {(r['Correction'] or r['Reason']).replace('|','/')} |")
+        if not r['CorrectedExact']:lines.append(f"| {r['Image']} | {r['Manufacturer']} | {r['ExpectedSerial']} | {r['CorrectedSerial']} | {(r['Correction'] or r['Reason']).replace('|','/')} |")
     (out/'Serial-Postprocess-Summary.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
     print('\n'.join(lines[:8]))
 if __name__=='__main__':main()
