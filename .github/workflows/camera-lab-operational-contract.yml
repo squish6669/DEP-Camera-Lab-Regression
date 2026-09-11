@@ -1,0 +1,55 @@
+name: Camera Lab Operational Contract Safety
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/camera-lab-operational-contract.yml"
+      - "scripts/operational_records.py"
+      - "docs/Camera-Lab-Operational-Contract.md"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-safety:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile operational bridge
+        shell: pwsh
+        run: python -m py_compile scripts/operational_records.py
+
+      - name: Verify no certificate status is invented without an index
+        shell: pwsh
+        run: |
+          @'
+          Image,Manufacturer,Serial,Model,Capacity
+          contract-test.jpg,SAMSUNG,ABC123456,MZTEST,256 GB
+          '@ | Set-Content -Encoding utf8 inference.csv
+          python scripts/operational_records.py --inference inference.csv --out-dir operational-results
+          if ($LASTEXITCODE -ne 0) { throw "Operational bridge failed" }
+          $s = Get-Content operational-results/Camera-Lab-Operational-Summary.json -Raw | ConvertFrom-Json
+          if ([int]$s.records -ne 1) { throw "Unexpected contract record count" }
+          if ([bool]$s.cert_lookup_performed) { throw "Certificate lookup must remain false without an external index" }
+          if ([int]$s.not_checked -ne 1) { throw "Record must remain NOT_CHECKED without an external certificate index" }
+          if ([int]$s.cert_found -ne 0 -or [int]$s.no_cert -ne 0 -or [int]$s.pending_destruction -ne 0) {
+            throw "Operational bridge invented a certificate/destruction state without source data"
+          }
+
+      - name: Verify destruction bin allow-list is fixed
+        shell: pwsh
+        run: |
+          @'
+          Image,Serial,Bin
+          contract-test.jpg,ABC123456,DS-13
+          '@ | Set-Content -Encoding utf8 invalid-assignment.csv
+          python scripts/operational_records.py --inference inference.csv --destruction-assignments invalid-assignment.csv --out-dir invalid-results
+          if ($LASTEXITCODE -eq 0) { throw "Invalid DS-13 assignment was accepted" }
+          Write-Host "Invalid DS-13 correctly rejected; allowed range remains DS-01 through DS-12."
