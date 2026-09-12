@@ -13,6 +13,7 @@ on:
       - "scripts/model_postprocess.py"
       - "scripts/serial_postprocess.py"
       - "scripts/capacity_postprocess.py"
+      - "scripts/capacity_multiview_images.py"
       - "data/**"
       - "*Part*.zip"
       - "Camera%20Roll%20-%20Part%*.zip"
@@ -25,13 +26,13 @@ env:
   RAPID_REF: ede58cc34fc07be55a049861c8e77edd9ca0e1a8
   TARGET_CORPUS_COUNT: "123"
   SERIAL_NO_REGRESSION_MIN_PCT: "95.0"
-  MODEL_BASELINE_MIN_PCT: "97.0"
-  CAPACITY_BASELINE_MIN_PCT: "97.1"
+  MODEL_BASELINE_MIN_PCT: "98.5"
+  CAPACITY_BASELINE_MIN_PCT: "98.5"
 
 jobs:
   validate-production-bridge:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - name: Checkout regression repository
         uses: actions/checkout@v4
@@ -48,6 +49,8 @@ jobs:
           $gt = @(Import-Csv data/Camera-Lab-Ground-Truth.csv)
           $verified = @($gt | Where-Object { ([string]$_.Verified).Trim().ToUpperInvariant() -eq 'YES' }).Count
           if ($verified -ne 68) { throw "Verified scoring subset changed unexpectedly: $verified" }
+          $unverified = $images.Count - $verified
+          if ($unverified -ne 55) { throw "Processed-but-unverified count changed unexpectedly: $unverified" }
           $dirs = @($images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
           if ($dirs.Count -ne 1) { throw "Expected unified corpus in one image directory" }
           "IMAGE_DIR=$($dirs[0])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
@@ -106,10 +109,28 @@ jobs:
           python scripts/run_camera_lab_bridge.py --exe "$pwd\camera-lab-bridge\CameraLabRapidOcr.exe" --images targeted-model-crops --out-dir bridge-targeted --max-side-len 2048
           if ($LASTEXITCODE -ne 0) { throw "Targeted production bridge OCR failed" }
 
+      - name: Build deterministic capacity alternate views
+        shell: pwsh
+        run: |
+          python scripts/capacity_multiview_images.py --images "$env:IMAGE_DIR" --out-dir capacity-multiview --expected-count 123
+          if ($LASTEXITCODE -ne 0) { throw "Capacity multiview generation failed" }
+          $views = @(Get-ChildItem capacity-multiview -File -Filter "*.jpg")
+          if ($views.Count -ne 246) { throw "Expected exactly 246 deterministic capacity views; found $($views.Count)" }
+
+      - name: Run production bridge on capacity alternate views
+        shell: pwsh
+        run: |
+          python scripts/run_camera_lab_bridge.py --exe "$pwd\camera-lab-bridge\CameraLabRapidOcr.exe" --images capacity-multiview --out-dir bridge-capacity-alt --max-side-len 2048
+          if ($LASTEXITCODE -ne 0) { throw "Capacity alternate-view production bridge OCR failed" }
+          $rows = @(Import-Csv bridge-capacity-alt/RapidOCR_Images.csv)
+          if ($rows.Count -ne 246) { throw "Capacity alternate-view bridge coverage failed: $($rows.Count)/246" }
+          $errors = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Error) })
+          if ($errors.Count -gt 0) { throw "Capacity alternate-view bridge reported $($errors.Count) image errors" }
+
       - name: Run ground-truth-free production inference
         shell: pwsh
         run: |
-          python scripts/production_inference.py --detections bridge-full/RapidOCR_Detections.csv --images bridge-full/RapidOCR_Images.csv --targeted-detections bridge-targeted/RapidOCR_Detections.csv --out-dir production-results
+          python scripts/production_inference.py --detections bridge-full/RapidOCR_Detections.csv --images bridge-full/RapidOCR_Images.csv --targeted-detections bridge-targeted/RapidOCR_Detections.csv --capacity-view-map capacity-multiview/Capacity-Multiview-Map.csv --capacity-alternate-detections bridge-capacity-alt/RapidOCR_Detections.csv --out-dir production-results
           if ($LASTEXITCODE -ne 0) { throw "Production inference failed" }
           $s = Get-Content production-results/Camera-Lab-Production-Inference-Summary.json -Raw | ConvertFrom-Json
           if ([bool]$s.ground_truth_consumed) { throw "Production inference consumed ground truth" }
@@ -118,7 +139,7 @@ jobs:
       - name: Validate production bridge outputs only after inference
         shell: pwsh
         run: |
-          python scripts/score_production_inference.py --ground-truth data/Camera-Lab-Ground-Truth.csv --inference production-results/Camera-Lab-Production-Inference.csv --out-dir validation-results --serial-min-pct $env:SERIAL_NO_REGRESSION_MIN_PCT --model-min-exact 64 --capacity-min-exact 66
+          python scripts/score_production_inference.py --ground-truth data/Camera-Lab-Ground-Truth.csv --inference production-results/Camera-Lab-Production-Inference.csv --out-dir validation-results --serial-min-pct $env:SERIAL_NO_REGRESSION_MIN_PCT --model-min-exact 65 --capacity-min-exact 67
           if ($LASTEXITCODE -ne 0) { throw "Production bridge validation scorer failed" }
           $v = Get-Content validation-results/Production-Inference-Validation.json -Raw | ConvertFrom-Json
           if ([double]$v.serial_pct -lt [double]$env:SERIAL_NO_REGRESSION_MIN_PCT) { throw "Production serial safety gate regressed: $($v.serial_pct)%" }
@@ -138,5 +159,8 @@ jobs:
             bridge-full/RapidOCR_Detections.csv
             bridge-targeted/RapidOCR_Images.csv
             bridge-targeted/RapidOCR_Detections.csv
+            bridge-capacity-alt/RapidOCR_Images.csv
+            bridge-capacity-alt/RapidOCR_Detections.csv
+            capacity-multiview/Capacity-Multiview-Map.csv
           if-no-files-found: warn
           retention-days: 30
