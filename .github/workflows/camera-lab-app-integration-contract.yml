@@ -1,0 +1,28 @@
+name: Camera Lab App Integration Contract
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'integration/CameraLab.Contracts/**'
+      - 'integration/CameraLab.Contracts.Smoke/**'
+      - '.github/workflows/camera-lab-app-integration-contract.yml'
+  workflow_dispatch:
+
+jobs:
+  validate-app-integration-contract:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build stable Camera Lab contracts
+        run: dotnet build integration/CameraLab.Contracts/CameraLab.Contracts.csproj --configuration Release
+
+      - name: Run safety smoke checks
+        run: dotnet run --project integration/CameraLab.Contracts.Smoke/CameraLab.Contracts.Smoke.csproj --configuration Release
