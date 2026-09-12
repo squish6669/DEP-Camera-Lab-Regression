@@ -3,6 +3,36 @@ from pathlib import Path
 
 EXTS={'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}
 
+def read_json_response(proc,image_name):
+    """Read one protocol response while tolerating library startup/log chatter on stdout.
+
+    CameraLabRapidOcr's contract is JSONL, but the OCR dependency can emit diagnostic
+    lines to stdout during model initialization/first use. Those lines are not protocol
+    responses and must not be mistaken for the image result. We therefore accept only a
+    JSON object containing the bridge's Ok field, preserving strict request/response
+    ordering without weakening OCR or identity logic.
+    """
+    skipped=[]
+    while True:
+        line=proc.stdout.readline()
+        if not line:
+            err=proc.stderr.read()
+            extra=('; non-JSON stdout: '+repr(skipped[-5:])) if skipped else ''
+            raise RuntimeError(f'CameraLabRapidOcr terminated before responding for {image_name}: {err}{extra}')
+        text=line.strip().lstrip('\ufeff')
+        if not text:
+            continue
+        try:
+            value=json.loads(text)
+        except json.JSONDecodeError:
+            skipped.append(text)
+            continue
+        if isinstance(value,dict) and 'Ok' in value:
+            if skipped:
+                print(f'[bridge diagnostic] ignored {len(skipped)} non-protocol stdout line(s) before {image_name}',file=sys.stderr)
+            return value
+        skipped.append(text)
+
 def main():
     ap=argparse.ArgumentParser(description='Run the production CameraLabRapidOcr JSONL bridge and emit regression-compatible OCR CSVs.')
     ap.add_argument('--exe',required=True)
@@ -19,11 +49,7 @@ def main():
         for p in images:
             req={'Path':str(p.resolve()),'MaxSideLen':a.max_side_len}
             proc.stdin.write(json.dumps(req,separators=(',',':'))+'\n'); proc.stdin.flush()
-            line=proc.stdout.readline()
-            if not line:
-                err=proc.stderr.read()
-                raise RuntimeError(f'CameraLabRapidOcr terminated before responding for {p.name}: {err}')
-            r=json.loads(line)
+            r=read_json_response(proc,p.name)
             ok=bool(r.get('Ok'))
             error='' if ok else (r.get('Error') or 'Unknown bridge error')
             raw=r.get('Text') or ''
