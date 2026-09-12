@@ -4,7 +4,7 @@ from pathlib import Path
 
 # Reuse the exact protected regression logic rather than copying or weakening it.
 from serial_postprocess import extract as serial_extract, vendor_recover, vendor_correct
-from model_postprocess import choose_candidate
+from model_postprocess import choose_candidate, family_candidates
 from capacity_postprocess import extract_candidates as capacity_candidates, canonical_display, confidence_bucket
 
 
@@ -98,6 +98,35 @@ def choose_serial(man, blocks, model=''):
     return corrected,score,(cr or reason),cands
 
 
+def choose_alternate_model(man, view_names, detections):
+    """Fill an empty model only when both deterministic views OCR the same bounded vendor-family token.
+
+    This deliberately excludes synthesized family recoveries and ground truth. It never replaces an
+    existing production model and requires exact two-view agreement on a token independently accepted
+    by the existing vendor-bounded model parser.
+    """
+    if not man or len(view_names) != 2:
+        return None
+    per_view=[]
+    evidence={}
+    for view in view_names:
+        candidates=family_candidates(man,detections.get(view,[]))
+        exact={}
+        for score,candidate,reason in candidates:
+            if reason == 'capacity-alternate-bounded-vendor-family':
+                exact[candidate]=(score,reason)
+        if not exact:
+            return None
+        per_view.append(set(exact))
+        evidence[view]=exact
+    common=per_view[0] & per_view[1]
+    if len(common) != 1:
+        return None
+    candidate=next(iter(common))
+    scores=[evidence[v][candidate][0] for v in view_names]
+    return candidate,min(scores),'two-view-exact-vendor-family-consensus'
+
+
 def choose_alternate_capacity(view_names, detections):
     by_gb={}
     for view in view_names:
@@ -158,6 +187,7 @@ def main():
             raise SystemExit(f'Each physical image must have exactly two deterministic capacity views; bad count={len(bad)}')
     images=list(csv.DictReader(open(a.images,encoding='utf-8-sig')))
     rows=[]
+    alternate_model_fills=0
     alternate_capacity_fills=0
     for image in images:
         fn=image['FileName']
@@ -167,6 +197,12 @@ def main():
         model_pick,model_decision=choose_candidate(man,blocks,tblocks) if man else (None,'no-manufacturer-evidence')
         model=model_pick[1] if model_pick else ''
         model_reason=(model_decision+':'+model_pick[2]) if model_pick else model_decision
+        if not model and man and capacity_views:
+            alt_model=choose_alternate_model(man,capacity_views.get(fn,[]),alt_capacity)
+            if alt_model:
+                model,model_score,model_alt_reason=alt_model
+                model_reason='multiview:'+model_alt_reason+f':score={model_score}'
+                alternate_model_fills+=1
         serial,serial_score,serial_reason,serial_cands=choose_serial(man,blocks,model)
         caps=capacity_candidates(blocks,man)
         cap=caps[0] if caps else None
@@ -211,6 +247,7 @@ def main():
         'serial_found':sum(bool(r['Serial']) for r in rows),
         'model_found':sum(bool(r['Model']) for r in rows),
         'capacity_found':sum(bool(r['Capacity']) for r in rows),
+        'model_multiview_fills':alternate_model_fills,
         'capacity_multiview_fills':alternate_capacity_fills,
         'ground_truth_consumed':False,
     }
