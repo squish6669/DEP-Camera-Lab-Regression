@@ -35,11 +35,11 @@ jobs:
         run: |
           @'
           Image,Serial,LookupStatus,CertMatchMethod,CertMatchCount,CertId,CertPath,PendingDestructionBin,DestructionStatus,SerialStatus,ModelStatus,CapacityStatus
-          pending.jpg,ABC123456,NO_CERT,0,,,,DS-03,PENDING_DESTRUCTION,FOUND,FOUND,READY
-          unresolved.jpg,XYZ987654,NO_CERT,0,,,,,,FOUND,FOUND,READY
-          duplicate.jpg,DUP111222,NO_CERT,0,,,,,,FOUND,FOUND,READY
+          pending.jpg,ABC123456,NO_CERT,,0,,,DS-03,PENDING_DESTRUCTION,FOUND,FOUND,READY
+          unresolved.jpg,XYZ987654,NO_CERT,,0,,,,,FOUND,FOUND,READY
+          duplicate.jpg,DUP111222,NO_CERT,,0,,,,,FOUND,FOUND,READY
           already-found.jpg,FOUND123,CERT_FOUND,EXACT_NORMALIZED_SERIAL,1,COD-OLD,G:\Digital Equity\Repository\COD-OLD.pdf,,,FOUND,FOUND,READY
-          review.jpg,REVIEW123,REVIEW,0,,,,,,REVIEW,FOUND,READY
+          review.jpg,REVIEW123,REVIEW,,0,,,,,REVIEW,FOUND,READY
           '@ | Set-Content -Encoding utf8 operational.csv
 
           @'
