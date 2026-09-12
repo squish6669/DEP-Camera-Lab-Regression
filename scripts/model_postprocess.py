@@ -54,7 +54,7 @@ def model_labeled_tokens(blocks,man=''):
         txt=(b.get('Text') or '').strip()
         conf=float(b.get('BoxConfidence') or 0)
         source=b.get('_Source','full')
-        mm=re.search(r'(?i)\b(?:MODEL|MDL|MODE[1ILU])(?:\s*\([^)]*\))?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\-]{4,24})',txt)
+        mm=re.search(r'(?i)\b(?:MODEL(?:\s*(?:NUMBER|NO\.?))?|MDL|MODE[1ILU])(?:\s*\([^)]*\))?\s*[:#\-]?\s*\*?\s*([A-Z0-9][A-Z0-9\-]{4,24})',txt)
         if mm:
             original=norm(mm.group(1))
             if 6<=len(original)<=24:
