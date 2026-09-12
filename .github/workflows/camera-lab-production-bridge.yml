@@ -1,0 +1,142 @@
+name: Camera Lab Production Bridge Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/camera-lab-production-bridge.yml"
+      - "scripts/run_camera_lab_bridge.py"
+      - "scripts/production_inference.py"
+      - "scripts/production_inference_validate.py"
+      - "scripts/model_target_crop.py"
+      - "scripts/model_postprocess.py"
+      - "scripts/serial_postprocess.py"
+      - "scripts/capacity_postprocess.py"
+      - "data/**"
+      - "*Part*.zip"
+      - "Camera%20Roll%20-%20Part%*.zip"
+
+permissions:
+  contents: read
+
+env:
+  RAPID_REPO: squish6669/RapidOCRCSharp
+  RAPID_REF: ede58cc34fc07be55a049861c8e77edd9ca0e1a8
+  TARGET_CORPUS_COUNT: "123"
+  SERIAL_NO_REGRESSION_MIN_PCT: "95.0"
+  MODEL_BASELINE_MIN_PCT: "97.0"
+  CAPACITY_BASELINE_MIN_PCT: "97.1"
+
+jobs:
+  validate-production-bridge:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout regression repository
+        uses: actions/checkout@v4
+
+      - name: Expand exact 123-image unified corpus
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path regression-images | Out-Null
+          $parts = @(Get-ChildItem -File -Filter "*.zip" | Where-Object { $_.Name -match 'Part(?:%20|\s)*[123]\.zip$' } | Sort-Object Name)
+          if ($parts.Count -ne 3) { throw "Expected exactly three split corpus archives; found $($parts.Count)" }
+          foreach ($part in $parts) { Expand-Archive -LiteralPath $part.FullName -DestinationPath regression-images -Force }
+          $images = @(Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($images.Count -ne [int]$env:TARGET_CORPUS_COUNT) { throw "Unified corpus must contain exactly 123 images; found $($images.Count)" }
+          $gt = @(Import-Csv data/Camera-Lab-Ground-Truth.csv)
+          $verified = @($gt | Where-Object { ([string]$_.Verified).Trim().ToUpperInvariant() -eq 'YES' }).Count
+          if ($verified -ne 68) { throw "Verified scoring subset changed unexpectedly: $verified" }
+          $dirs = @($images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
+          if ($dirs.Count -ne 1) { throw "Expected unified corpus in one image directory" }
+          "IMAGE_DIR=$($dirs[0])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "Production bridge corpus: 123/123; verified: 68; unscored: 55" | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Checkout pinned RapidOCR source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.RAPID_REPO }}
+          ref: ${{ env.RAPID_REF }}
+          path: RapidOCRCSharp
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish actual CameraLabRapidOcr bridge
+        shell: pwsh
+        run: |
+          $actual = (git -C RapidOCRCSharp rev-parse HEAD).Trim()
+          if ($actual -ne $env:RAPID_REF) { throw "RapidOCR revision mismatch" }
+          dotnet publish RapidOCRCSharp/CameraLabRapidOcr/CameraLabRapidOcr.csproj -c Release -r win-x64 --self-contained true -o camera-lab-bridge
+          if ($LASTEXITCODE -ne 0) { throw "CameraLabRapidOcr publish failed" }
+          New-Item -ItemType Directory -Force -Path camera-lab-bridge/models | Out-Null
+          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* camera-lab-bridge/models -Recurse -Force
+          if (!(Test-Path camera-lab-bridge/CameraLabRapidOcr.exe)) { throw "Published CameraLabRapidOcr.exe missing" }
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run actual production bridge on all 123 images
+        shell: pwsh
+        run: |
+          python scripts/run_camera_lab_bridge.py --exe "$pwd\camera-lab-bridge\CameraLabRapidOcr.exe" --images "$env:IMAGE_DIR" --out-dir bridge-full --max-side-len 2048
+          if ($LASTEXITCODE -ne 0) { throw "Production bridge OCR failed" }
+          $rows = @(Import-Csv bridge-full/RapidOCR_Images.csv)
+          if ($rows.Count -ne 123) { throw "Production bridge coverage failed: $($rows.Count)/123" }
+          $errors = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Error) })
+          if ($errors.Count -gt 0) { throw "Production bridge reported $($errors.Count) image errors" }
+
+      - name: Build targeted model crops from production bridge detections
+        shell: pwsh
+        run: |
+          python -m pip install pillow
+          python scripts/model_target_crop.py --images "$env:IMAGE_DIR" --detections bridge-full/RapidOCR_Detections.csv --out-dir targeted-model-crops
+          if ($LASTEXITCODE -ne 0) { throw "Targeted crop generation failed" }
+          $crops = @(Get-ChildItem targeted-model-crops -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($crops.Count -eq 0) { throw "Targeted crop generation produced no crops" }
+
+      - name: Run production bridge on targeted model crops
+        shell: pwsh
+        run: |
+          python scripts/run_camera_lab_bridge.py --exe "$pwd\camera-lab-bridge\CameraLabRapidOcr.exe" --images targeted-model-crops --out-dir bridge-targeted --max-side-len 2048
+          if ($LASTEXITCODE -ne 0) { throw "Targeted production bridge OCR failed" }
+
+      - name: Run ground-truth-free production inference
+        shell: pwsh
+        run: |
+          python scripts/production_inference.py --detections bridge-full/RapidOCR_Detections.csv --images bridge-full/RapidOCR_Images.csv --targeted-detections bridge-targeted/RapidOCR_Detections.csv --out-dir production-results
+          if ($LASTEXITCODE -ne 0) { throw "Production inference failed" }
+          $s = Get-Content production-results/Camera-Lab-Production-Inference-Summary.json -Raw | ConvertFrom-Json
+          if ([bool]$s.ground_truth_consumed) { throw "Production inference consumed ground truth" }
+          if ([int]$s.images -ne 123) { throw "Production inference image count changed" }
+
+      - name: Validate production bridge outputs only after inference
+        shell: pwsh
+        run: |
+          python scripts/production_inference_validate.py --ground-truth data/Camera-Lab-Ground-Truth.csv --inference production-results/Camera-Lab-Production-Inference.csv --out-dir validation-results
+          if ($LASTEXITCODE -ne 0) { throw "Production bridge validation scorer failed" }
+          $v = Get-Content validation-results/Camera-Lab-Production-Validation-Summary.json -Raw | ConvertFrom-Json
+          if ([double]$v.serial_pct -lt [double]$env:SERIAL_NO_REGRESSION_MIN_PCT) { throw "Production serial safety gate regressed: $($v.serial_pct)%" }
+          if ([double]$v.model_pct -lt [double]$env:MODEL_BASELINE_MIN_PCT) { throw "Production model baseline regressed: $($v.model_pct)%" }
+          if ([double]$v.capacity_pct -lt [double]$env:CAPACITY_BASELINE_MIN_PCT) { throw "Production capacity baseline regressed: $($v.capacity_pct)%" }
+          Get-Content validation-results/Camera-Lab-Production-Validation-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload production bridge evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camera-Lab-Production-Bridge-${{ github.run_number }}
+          path: |
+            production-results/**
+            validation-results/**
+            bridge-full/RapidOCR_Images.csv
+            bridge-full/RapidOCR_Detections.csv
+            bridge-targeted/RapidOCR_Images.csv
+            bridge-targeted/RapidOCR_Detections.csv
+          if-no-files-found: warn
+          retention-days: 30
