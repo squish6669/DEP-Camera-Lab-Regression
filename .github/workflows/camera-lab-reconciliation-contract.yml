@@ -1,0 +1,99 @@
+name: Camera Lab Reconciliation Contract Safety
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/camera-lab-reconciliation-contract.yml"
+      - "scripts/reconcile_operational_records.py"
+
+permissions:
+  contents: read
+
+jobs:
+  reconciliation-safety:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile reconciliation bridge
+        shell: pwsh
+        run: python -m py_compile scripts/reconcile_operational_records.py
+
+      - name: Create deterministic operational fixture
+        shell: pwsh
+        run: |
+          @'
+          Image,Serial,LookupStatus,CertId,CertPath,PendingDestructionBin,DestructionStatus
+          pending.jpg,ABC123456,NO_CERT,,,DS-03,PENDING_DESTRUCTION
+          unresolved.jpg,XYZ987654,NO_CERT,,,,
+          duplicate.jpg,DUP111222,NO_CERT,,,,
+          already-found.jpg,FOUND123,CERT_FOUND,COD-OLD,G:\Digital Equity\Repository\COD-OLD.pdf,,
+          review.jpg,REVIEW123,REVIEW,,,,
+          '@ | Set-Content -Encoding utf8 records.csv
+
+          @'
+          Serial,CertId,CertPath
+          ABC-123-456,COD-NEW,G:\Digital Equity\Repository\COD-NEW.pdf
+          DUP111222,COD-DUP-1,G:\Digital Equity\Repository\COD-DUP-1.pdf
+          DUP-111-222,COD-DUP-2,G:\Digital Equity\Repository\COD-DUP-2.pdf
+          FOUND123,COD-REPLACEMENT,G:\Digital Equity\Repository\COD-REPLACEMENT.pdf
+          '@ | Set-Content -Encoding utf8 certs.csv
+
+      - name: Run reconciliation bridge
+        shell: pwsh
+        run: |
+          python scripts/reconcile_operational_records.py --records records.csv --cert-index certs.csv --out-dir reconciliation-results
+          if ($LASTEXITCODE -ne 0) { throw "Reconciliation bridge failed" }
+
+      - name: Verify unique exact match reconciles prior NO_CERT only
+        shell: pwsh
+        run: |
+          $r = @(Import-Csv reconciliation-results/Camera-Lab-Reconciliation.csv)
+          $pending = $r | Where-Object Image -eq 'pending.jpg'
+          if ($pending.ReconciliationStatus -ne 'RECONCILED_CERT_FOUND') { throw "Prior NO_CERT unique exact serial was not reconciled" }
+          if ($pending.ReconciliationMatchMethod -ne 'EXACT_NORMALIZED_SERIAL') { throw "Unexpected reconciliation match method" }
+          if ($pending.ReconciledCertId -ne 'COD-NEW') { throw "Explicit certificate metadata was not preserved" }
+          if ($pending.RecommendedAction -ne 'REMOVE_FROM_PENDING_DESTRUCTION') { throw "Pending destruction record did not receive removal recommendation" }
+          if ($pending.PendingDestructionBin -ne 'DS-03' -or $pending.DestructionStatus -ne 'PENDING_DESTRUCTION') { throw "Reconciliation must preserve original destruction history instead of silently mutating it" }
+
+      - name: Verify unmatched prior NO_CERT remains unresolved
+        shell: pwsh
+        run: |
+          $r = @(Import-Csv reconciliation-results/Camera-Lab-Reconciliation.csv)
+          $u = $r | Where-Object Image -eq 'unresolved.jpg'
+          if ($u.ReconciliationStatus -ne 'STILL_NO_CERT') { throw "Unmatched prior NO_CERT was incorrectly changed" }
+          if ($u.ReconciledCertId -or $u.ReconciledCertPath -or $u.ReconciliationMatchMethod) { throw "Unmatched record invented certificate metadata" }
+
+      - name: Verify duplicate exact certificates route to REVIEW
+        shell: pwsh
+        run: |
+          $r = @(Import-Csv reconciliation-results/Camera-Lab-Reconciliation.csv)
+          $d = $r | Where-Object Image -eq 'duplicate.jpg'
+          if ($d.ReconciliationStatus -ne 'REVIEW') { throw "Duplicate exact certificates must route to REVIEW" }
+          if ([int]$d.ReconciliationMatchCount -ne 2) { throw "Duplicate certificate count was not preserved" }
+          if ($d.ReconciledCertId -or $d.ReconciledCertPath -or $d.ReconciliationMatchMethod) { throw "Duplicate certificate records must not select a certificate" }
+
+      - name: Verify non-NO_CERT states are never silently reclassified
+        shell: pwsh
+        run: |
+          $r = @(Import-Csv reconciliation-results/Camera-Lab-Reconciliation.csv)
+          $found = $r | Where-Object Image -eq 'already-found.jpg'
+          $review = $r | Where-Object Image -eq 'review.jpg'
+          if ($found.ReconciliationStatus -ne 'NOT_ELIGIBLE' -or $review.ReconciliationStatus -ne 'NOT_ELIGIBLE') { throw "Only prior NO_CERT records may enter automatic reconciliation" }
+          if ($found.CertId -ne 'COD-OLD') { throw "Existing CERT_FOUND metadata was modified" }
+          if ($found.ReconciledCertId -or $review.ReconciledCertId) { throw "Non-eligible states received invented reconciliation metadata" }
+
+      - name: Verify summary safety flags
+        shell: pwsh
+        run: |
+          $s = Get-Content reconciliation-results/Camera-Lab-Reconciliation-Summary.json -Raw | ConvertFrom-Json
+          if ([int]$s.records -ne 5) { throw "Unexpected reconciliation record count" }
+          if ([int]$s.eligible_no_cert -ne 3) { throw "Unexpected eligible NO_CERT count" }
+          if ([int]$s.reconciled_cert_found -ne 1 -or [int]$s.still_no_cert -ne 1 -or [int]$s.review -ne 1) { throw "Unexpected reconciliation outcome counts" }
+          if ([bool]$s.automatic_destruction_history_mutation) { throw "Reconciliation must never silently rewrite destruction history" }
