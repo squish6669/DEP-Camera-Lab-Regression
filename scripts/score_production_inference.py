@@ -2,6 +2,10 @@ import argparse,csv,json,re
 from pathlib import Path
 
 
+PROTECTED_MODEL_MIN_EXACT=65
+PROTECTED_CAPACITY_MIN_EXACT=67
+
+
 def norm(s):
     return re.sub(r'[^A-Z0-9]','',(s or '').upper())
 
@@ -21,9 +25,12 @@ def main():
     ap.add_argument('--inference',required=True)
     ap.add_argument('--out-dir',required=True)
     ap.add_argument('--serial-min-pct',type=float,default=95.0)
-    ap.add_argument('--model-min-exact',type=int,default=64)
-    ap.add_argument('--capacity-min-exact',type=int,default=66)
+    ap.add_argument('--model-min-exact',type=int,default=PROTECTED_MODEL_MIN_EXACT)
+    ap.add_argument('--capacity-min-exact',type=int,default=PROTECTED_CAPACITY_MIN_EXACT)
     a=ap.parse_args()
+    # Callers may raise these floors, but must never weaken the validated production baseline.
+    model_min_exact=max(a.model_min_exact,PROTECTED_MODEL_MIN_EXACT)
+    capacity_min_exact=max(a.capacity_min_exact,PROTECTED_CAPACITY_MIN_EXACT)
     out=Path(a.out_dir);out.mkdir(parents=True,exist_ok=True)
     gt=list(csv.DictReader(open(a.ground_truth,encoding='utf-8-sig')))
     pred={r['Image']:r for r in csv.DictReader(open(a.inference,encoding='utf-8-sig'))}
@@ -52,7 +59,7 @@ def main():
     (out/'Production-Inference-Validation.md').write_text('\n'.join(md)+'\n',encoding='utf-8')
     print('\n'.join(md))
     if serial_pct < a.serial_min_pct: raise SystemExit(f'Production serial gate failed: {serial_exact}/{serial_n}={serial_pct}% < {a.serial_min_pct}%')
-    if model_exact < a.model_min_exact: raise SystemExit(f'Production model regression: {model_exact}/{model_n} < {a.model_min_exact}')
-    if cap_exact < a.capacity_min_exact: raise SystemExit(f'Production capacity regression: {cap_exact}/{cap_n} < {a.capacity_min_exact}')
+    if model_exact < model_min_exact: raise SystemExit(f'Production model regression: {model_exact}/{model_n} < {model_min_exact}')
+    if cap_exact < capacity_min_exact: raise SystemExit(f'Production capacity regression: {cap_exact}/{cap_n} < {capacity_min_exact}')
 
 if __name__=='__main__': main()
