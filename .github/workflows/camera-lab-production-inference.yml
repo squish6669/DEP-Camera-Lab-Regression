@@ -161,6 +161,27 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Production inference safety validation failed" }
           Get-Content validation-results/Production-Inference-Validation.md | Add-Content $env:GITHUB_STEP_SUMMARY
 
+      - name: Collect OCR diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path diagnostic-results\full | Out-Null
+          New-Item -ItemType Directory -Force -Path diagnostic-results\targeted-model | Out-Null
+          New-Item -ItemType Directory -Force -Path diagnostic-results\capacity-multiview | Out-Null
+          if ($env:RESULT_DIR -and (Test-Path $env:RESULT_DIR)) {
+            Copy-Item "$env:RESULT_DIR\RapidOCR_Images.csv" diagnostic-results\full\ -Force -ErrorAction SilentlyContinue
+            Copy-Item "$env:RESULT_DIR\RapidOCR_Detections.csv" diagnostic-results\full\ -Force -ErrorAction SilentlyContinue
+          }
+          if ($env:TARGET_RESULT_DIR -and (Test-Path $env:TARGET_RESULT_DIR)) {
+            Copy-Item "$env:TARGET_RESULT_DIR\RapidOCR_Images.csv" diagnostic-results\targeted-model\ -Force -ErrorAction SilentlyContinue
+            Copy-Item "$env:TARGET_RESULT_DIR\RapidOCR_Detections.csv" diagnostic-results\targeted-model\ -Force -ErrorAction SilentlyContinue
+          }
+          if ($env:CAPACITY_ALT_RESULT_DIR -and (Test-Path $env:CAPACITY_ALT_RESULT_DIR)) {
+            Copy-Item "$env:CAPACITY_ALT_RESULT_DIR\RapidOCR_Images.csv" diagnostic-results\capacity-multiview\ -Force -ErrorAction SilentlyContinue
+            Copy-Item "$env:CAPACITY_ALT_RESULT_DIR\RapidOCR_Detections.csv" diagnostic-results\capacity-multiview\ -Force -ErrorAction SilentlyContinue
+          }
+          Copy-Item capacity-multiview\Capacity-Multiview-Map.csv diagnostic-results\capacity-multiview\ -Force -ErrorAction SilentlyContinue
+
       - name: Upload production inference evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -170,5 +191,6 @@ jobs:
             production-results/**
             contract-results/**
             validation-results/**
+            diagnostic-results/**
           if-no-files-found: warn
           retention-days: 30
