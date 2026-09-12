@@ -110,10 +110,20 @@ def choose_alternate_model(man, view_names, detections):
     per_view=[]
     evidence={}
     for view in view_names:
-        candidates=family_candidates(man,detections.get(view,[]))
+        blocks=detections.get(view,[])
+        candidates=family_candidates(man,blocks)
+        raw_norm=norm(' '.join((b.get('Text') or '') for b in blocks))
         exact={}
         for score,candidate,reason in candidates:
-            if reason == 'capacity-alternate-bounded-vendor-family':
+            # family_candidates deduplicates by candidate and may retain a higher-scoring
+            # recovery reason even when the exact same candidate is literally present in
+            # this OCR view. Accept only bounded-parser candidates whose normalized token
+            # is directly present in the view, or whose retained reason is already the
+            # direct bounded-family reason. This preserves evidence without admitting a
+            # synthesized model.
+            direct_reason = reason == 'capacity-alternate-bounded-vendor-family'
+            literal_evidence = bool(candidate and candidate in raw_norm)
+            if direct_reason or literal_evidence:
                 exact[candidate]=(score,reason)
         if not exact:
             return None
