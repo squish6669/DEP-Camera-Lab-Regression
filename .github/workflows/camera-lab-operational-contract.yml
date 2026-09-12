@@ -26,13 +26,17 @@ jobs:
         shell: pwsh
         run: python -m py_compile scripts/operational_records.py
 
-      - name: Verify no certificate status is invented without an index
+      - name: Create deterministic inference fixture
         shell: pwsh
         run: |
           @'
           Image,Manufacturer,Serial,Model,Capacity
           contract-test.jpg,SAMSUNG,ABC123456,MZTEST,256 GB
           '@ | Set-Content -Encoding utf8 inference.csv
+
+      - name: Verify no certificate status is invented without an index
+        shell: pwsh
+        run: |
           python scripts/operational_records.py --inference inference.csv --out-dir operational-results
           if ($LASTEXITCODE -ne 0) { throw "Operational bridge failed" }
           $s = Get-Content operational-results/Camera-Lab-Operational-Summary.json -Raw | ConvertFrom-Json
@@ -42,6 +46,66 @@ jobs:
           if ([int]$s.cert_found -ne 0 -or [int]$s.no_cert -ne 0 -or [int]$s.pending_destruction -ne 0) {
             throw "Operational bridge invented a certificate/destruction state without source data"
           }
+
+      - name: Verify only unique exact normalized serial creates CERT_FOUND
+        shell: pwsh
+        run: |
+          @'
+          Serial,CertId,CertPath
+          ABC-123-456,COD-001,G:\Digital Equity\Repository\COD-001.pdf
+          '@ | Set-Content -Encoding utf8 unique-cert.csv
+          python scripts/operational_records.py --inference inference.csv --cert-index unique-cert.csv --out-dir exact-match-results
+          if ($LASTEXITCODE -ne 0) { throw "Exact-match contract run failed" }
+          $r = @(Import-Csv exact-match-results/Camera-Lab-Operational-Records.csv)
+          if ($r.Count -ne 1) { throw "Unexpected exact-match record count" }
+          if ($r[0].LookupStatus -ne 'CERT_FOUND') { throw "Unique exact normalized serial was not accepted" }
+          if ($r[0].CertMatchMethod -ne 'EXACT_NORMALIZED_SERIAL') { throw "Unexpected certificate match method" }
+          if ($r[0].CertId -ne 'COD-001') { throw "Accepted certificate metadata was not preserved" }
+
+      - name: Verify duplicate exact certificates route to REVIEW
+        shell: pwsh
+        run: |
+          @'
+          Serial,CertId,CertPath
+          ABC123456,COD-001,G:\Digital Equity\Repository\COD-001.pdf
+          ABC-123-456,COD-002,G:\Digital Equity\Repository\COD-002.pdf
+          '@ | Set-Content -Encoding utf8 duplicate-cert.csv
+          python scripts/operational_records.py --inference inference.csv --cert-index duplicate-cert.csv --out-dir duplicate-results
+          if ($LASTEXITCODE -ne 0) { throw "Duplicate-cert contract run failed" }
+          $r = @(Import-Csv duplicate-results/Camera-Lab-Operational-Records.csv)
+          if ($r[0].LookupStatus -ne 'REVIEW') { throw "Duplicate exact certificate records must route to REVIEW" }
+          if ($r[0].CertId -or $r[0].CertPath -or $r[0].CertMatchMethod) { throw "Duplicate certificate records must not select a certificate" }
+
+      - name: Verify NO_CERT can be explicitly assigned to DS-01 through DS-12
+        shell: pwsh
+        run: |
+          @'
+          Serial,CertId,CertPath
+          DIFFERENT999,COD-999,G:\Digital Equity\Repository\COD-999.pdf
+          '@ | Set-Content -Encoding utf8 no-match-cert.csv
+          @'
+          Image,Serial,Bin
+          contract-test.jpg,ABC123456,DS-12
+          '@ | Set-Content -Encoding utf8 valid-assignment.csv
+          python scripts/operational_records.py --inference inference.csv --cert-index no-match-cert.csv --destruction-assignments valid-assignment.csv --out-dir destruction-results
+          if ($LASTEXITCODE -ne 0) { throw "Valid NO_CERT destruction assignment was rejected" }
+          $r = @(Import-Csv destruction-results/Camera-Lab-Operational-Records.csv)
+          if ($r[0].LookupStatus -ne 'NO_CERT') { throw "Expected NO_CERT before destruction assignment" }
+          if ($r[0].PendingDestructionBin -ne 'DS-12') { throw "Valid destruction bin was not preserved" }
+          if ($r[0].DestructionStatus -ne 'PENDING_DESTRUCTION') { throw "Pending destruction status was not set" }
+
+      - name: Verify destruction is rejected for CERT_FOUND
+        shell: pwsh
+        run: |
+          @'
+          Image,Serial,Bin
+          contract-test.jpg,ABC123456,DS-01
+          '@ | Set-Content -Encoding utf8 cert-found-assignment.csv
+          python scripts/operational_records.py --inference inference.csv --cert-index unique-cert.csv --destruction-assignments cert-found-assignment.csv --out-dir rejected-cert-destruction
+          $expectedFailure = $LASTEXITCODE
+          if ($expectedFailure -eq 0) { throw "CERT_FOUND record was incorrectly allowed into pending destruction" }
+          $global:LASTEXITCODE = 0
+          Write-Host "CERT_FOUND destruction assignment correctly rejected."
 
       - name: Verify destruction bin allow-list is fixed
         shell: pwsh
