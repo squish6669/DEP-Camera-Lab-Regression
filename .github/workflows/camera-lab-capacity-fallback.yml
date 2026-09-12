@@ -1,0 +1,151 @@
+name: Camera Lab 123-Image Capacity Geometry Fallback
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/camera-lab-capacity-fallback.yml"
+      - "scripts/capacity_target_crop.py"
+      - "scripts/capacity_targeted_eval.py"
+      - "scripts/capacity_postprocess.py"
+      - "scripts/serial_postprocess.py"
+      - "data/**"
+      - "*Part*.zip"
+      - "Camera%20Roll%20-%20Part%*.zip"
+
+permissions:
+  contents: read
+
+env:
+  RAPID_REPO: squish6669/RapidOCRCSharp
+  RAPID_REF: ede58cc34fc07be55a049861c8e77edd9ca0e1a8
+  TARGET_CORPUS_COUNT: "123"
+  SERIAL_NO_REGRESSION_MIN_PCT: "95.0"
+  CAPACITY_NO_REGRESSION_MIN_PCT: "97.1"
+
+jobs:
+  capacity-fallback:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Expand exact 123-image unified corpus
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path regression-images | Out-Null
+          $parts = @(Get-ChildItem -File -Filter "*.zip" | Where-Object { $_.Name -match 'Part(?:%20|\s)*[123]\.zip$' } | Sort-Object Name)
+          if ($parts.Count -ne 3) { throw "Expected exactly three split corpus archives; found $($parts.Count)" }
+          foreach ($part in $parts) { Expand-Archive -LiteralPath $part.FullName -DestinationPath regression-images -Force }
+          $images = @(Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($images.Count -ne [int]$env:TARGET_CORPUS_COUNT) { throw "Unified corpus must contain exactly 123 images; found $($images.Count)" }
+          $names = @($images | ForEach-Object { $_.Name.ToLowerInvariant() })
+          if (@($names | Sort-Object -Unique).Count -ne $images.Count) { throw "Duplicate image filenames in unified corpus" }
+          $dirs = @($images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
+          if ($dirs.Count -ne 1) { throw "Expected unified corpus in one image directory" }
+          $gt = @(Import-Csv data/Camera-Lab-Ground-Truth.csv)
+          $verified = @($gt | Where-Object { ([string]$_.Verified).Trim().ToUpperInvariant() -eq 'YES' }).Count
+          if ($verified -ne 68) { throw "Verified scoring subset changed unexpectedly: $verified" }
+          "IMAGE_DIR=$($dirs[0])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Checkout pinned RapidOCR source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.RAPID_REPO }}
+          ref: ${{ env.RAPID_REF }}
+          path: RapidOCRCSharp
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish pinned OCR runner
+        shell: pwsh
+        run: |
+          $actual = (git -C RapidOCRCSharp rev-parse HEAD).Trim()
+          if ($actual -ne $env:RAPID_REF) { throw "RapidOCR revision mismatch" }
+          dotnet publish RapidOCRCSharp/DriveLabelSweep/DriveLabelSweep.csproj -c Release -r win-x64 --self-contained true -o sweep-publish
+          New-Item -ItemType Directory -Force -Path sweep-publish/models | Out-Null
+          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* sweep-publish/models -Recurse -Force
+
+      - name: OCR all 123 images at 2048
+        shell: pwsh
+        run: |
+          & .\sweep-publish\DriveLabelSweep.exe "$env:IMAGE_DIR" "2048"
+          if ($LASTEXITCODE -ne 0) { throw "OCR sweep failed" }
+          $sweep = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$sweep) { throw "OCR output folder missing" }
+          $result = Join-Path $sweep.FullName "maxSideLen_2048"
+          $rows = @(Import-Csv (Join-Path $result "RapidOCR_Images.csv"))
+          if ($rows.Count -ne 123) { throw "OCR coverage failed: $($rows.Count)/123" }
+          $errors = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Error) })
+          if ($errors.Count -gt 0) { throw "OCR reported $($errors.Count) image errors" }
+          "RESULT_DIR=$result" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build capacity-specific crops
+        shell: pwsh
+        run: |
+          python -m pip install pillow
+          python scripts/capacity_target_crop.py --images "$env:IMAGE_DIR" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --out-dir targeted-capacity-crops
+          if ($LASTEXITCODE -ne 0) { throw "Capacity crop generation failed" }
+          $crops = @(Get-ChildItem targeted-capacity-crops -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($crops.Count -ne 123) { throw "Expected one deterministic capacity crop per image; found $($crops.Count)" }
+
+      - name: OCR capacity crops at 2048
+        shell: pwsh
+        run: |
+          & .\sweep-publish\DriveLabelSweep.exe "targeted-capacity-crops" "2048"
+          if ($LASTEXITCODE -ne 0) { throw "Targeted OCR sweep failed" }
+          $sweep = Get-ChildItem "targeted-capacity-crops" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$sweep) { throw "Targeted OCR output folder missing" }
+          $result = Join-Path $sweep.FullName "maxSideLen_2048"
+          $rows = @(Import-Csv (Join-Path $result "RapidOCR_Images.csv"))
+          if ($rows.Count -ne 123) { throw "Targeted OCR coverage failed: $($rows.Count)/123" }
+          $errors = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Error) })
+          if ($errors.Count -gt 0) { throw "Targeted OCR reported $($errors.Count) image errors" }
+          "TARGET_RESULT_DIR=$result" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Evaluate targeted capacity only as empty-result fallback
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path capacity-targeted-results | Out-Null
+          python scripts/capacity_targeted_eval.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --targeted-detections "$env:TARGET_RESULT_DIR\RapidOCR_Detections.csv" --out-dir capacity-targeted-results
+          $c = Get-Content capacity-targeted-results/Capacity-Targeted-Summary.json -Raw | ConvertFrom-Json
+          if ([double]$c.capacity_pct -lt [double]$env:CAPACITY_NO_REGRESSION_MIN_PCT) { throw "Capacity regressed: $($c.capacity_exact)/$($c.capacity_n) = $($c.capacity_pct)%" }
+          Get-Content capacity-targeted-results/Capacity-Targeted-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Reconfirm production serial safety
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path serial-results | Out-Null
+          python scripts/serial_postprocess.py --ground-truth data/Camera-Lab-Ground-Truth.csv --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --images "$env:RESULT_DIR\RapidOCR_Images.csv" --out-dir serial-results
+          $s = Get-Content serial-results/Serial-Postprocess-Summary.json -Raw | ConvertFrom-Json
+          if ([double]$s.corrected_pct -lt [double]$env:SERIAL_NO_REGRESSION_MIN_PCT) { throw "Serial safety gate regressed: $($s.corrected_exact)/$($s.serial_n) = $($s.corrected_pct)%" }
+
+      - name: Stage evidence
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path targeted-capacity-evidence | Out-Null
+          if ($env:TARGET_RESULT_DIR -and (Test-Path $env:TARGET_RESULT_DIR)) {
+            Copy-Item "$env:TARGET_RESULT_DIR\RapidOCR_Images.csv" targeted-capacity-evidence -Force -ErrorAction SilentlyContinue
+            Copy-Item "$env:TARGET_RESULT_DIR\RapidOCR_Detections.csv" targeted-capacity-evidence -Force -ErrorAction SilentlyContinue
+          }
+          Copy-Item targeted-capacity-crops/Targeted-Crops.csv targeted-capacity-evidence -Force -ErrorAction SilentlyContinue
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camera-Lab-123-Capacity-Geometry-${{ github.run_number }}
+          path: |
+            capacity-targeted-results/**
+            serial-results/**
+            targeted-capacity-evidence/**
+          if-no-files-found: warn
+          retention-days: 30
