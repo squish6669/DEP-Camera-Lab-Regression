@@ -81,7 +81,9 @@ jobs:
           bad.jpg,SERBAD,CERT_FOUND,EXACT_NORMALIZED_SERIAL,1,COD-BAD,G:\cert.pdf,DS-02,PENDING_DESTRUCTION
           '@ | Set-Content -Encoding utf8 invalid.csv
           python scripts/build_scan_records.py --records invalid.csv --out-dir invalid-out
-          if ($LASTEXITCODE -eq 0) { throw "CERT_FOUND destruction assignment was incorrectly accepted" }
+          $code = $LASTEXITCODE
+          if ($code -eq 0) { throw "CERT_FOUND destruction assignment was incorrectly accepted" }
+          $global:LASTEXITCODE = 0
 
       - name: Verify fake certificate metadata is rejected
         shell: pwsh
@@ -91,4 +93,6 @@ jobs:
           bad-cert.jpg,SERBAD,NO_CERT,,0,COD-FAKE,G:\fake.pdf,,
           '@ | Set-Content -Encoding utf8 invalid-cert.csv
           python scripts/build_scan_records.py --records invalid-cert.csv --out-dir invalid-cert-out
-          if ($LASTEXITCODE -eq 0) { throw "Non-CERT_FOUND record with certificate metadata was incorrectly accepted" }
+          $code = $LASTEXITCODE
+          if ($code -eq 0) { throw "Non-CERT_FOUND record with certificate metadata was incorrectly accepted" }
+          $global:LASTEXITCODE = 0
