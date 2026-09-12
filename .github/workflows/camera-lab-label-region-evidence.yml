@@ -1,0 +1,139 @@
+name: Camera Lab 123-Image Label Region Evidence
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/camera-lab-label-region-evidence.yml"
+      - "scripts/label_region_views.py"
+      - "*Part*.zip"
+      - "Camera%20Roll%20-%20Part%*.zip"
+
+permissions:
+  contents: read
+
+env:
+  RAPID_REPO: squish6669/RapidOCRCSharp
+  RAPID_REF: ede58cc34fc07be55a049861c8e77edd9ca0e1a8
+  TARGET_CORPUS_COUNT: "123"
+
+jobs:
+  label-region-evidence:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout regression repository
+        uses: actions/checkout@v4
+
+      - name: Expand exact 123-image unified corpus
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path regression-images | Out-Null
+          $parts = @(Get-ChildItem -File -Filter "*.zip" | Where-Object { $_.Name -match 'Part(?:%20|\s)*[123]\.zip$' } | Sort-Object Name)
+          if ($parts.Count -ne 3) { throw "Expected exactly three split corpus archives; found $($parts.Count)" }
+          foreach ($part in $parts) { Expand-Archive -LiteralPath $part.FullName -DestinationPath regression-images -Force }
+          $images = @(Get-ChildItem regression-images -Recurse -File | Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|bmp|tif|tiff)$' })
+          if ($images.Count -ne [int]$env:TARGET_CORPUS_COUNT) { throw "Unified corpus must contain exactly 123 images; found $($images.Count)" }
+          $names = @($images | ForEach-Object { $_.Name.ToLowerInvariant() })
+          if (@($names | Sort-Object -Unique).Count -ne $images.Count) { throw "Duplicate image filenames in unified corpus" }
+          $dirs = @($images | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
+          if ($dirs.Count -ne 1) { throw "Expected unified corpus in one image directory" }
+          "IMAGE_DIR=$($dirs[0])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Checkout pinned RapidOCR source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.RAPID_REPO }}
+          ref: ${{ env.RAPID_REF }}
+          path: RapidOCRCSharp
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish pinned OCR runner
+        shell: pwsh
+        run: |
+          $actual = (git -C RapidOCRCSharp rev-parse HEAD).Trim()
+          if ($actual -ne $env:RAPID_REF) { throw "RapidOCR revision mismatch" }
+          dotnet publish RapidOCRCSharp/DriveLabelSweep/DriveLabelSweep.csproj -c Release -r win-x64 --self-contained true -o sweep-publish
+          New-Item -ItemType Directory -Force -Path sweep-publish/models | Out-Null
+          Copy-Item RapidOCRCSharp/RapidOCRConsole/models/* sweep-publish/models -Recurse -Force
+
+      - name: OCR all 123 physical images for geometry
+        shell: pwsh
+        run: |
+          & .\sweep-publish\DriveLabelSweep.exe "$env:IMAGE_DIR" "2048"
+          if ($LASTEXITCODE -ne 0) { throw "Baseline OCR sweep failed" }
+          $sweep = Get-ChildItem "$env:IMAGE_DIR" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$sweep) { throw "Baseline OCR output folder missing" }
+          $result = Join-Path $sweep.FullName "maxSideLen_2048"
+          $rows = @(Import-Csv (Join-Path $result "RapidOCR_Images.csv"))
+          if ($rows.Count -ne 123) { throw "Baseline OCR coverage failed: $($rows.Count)/123" }
+          $errors = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Error) })
+          if ($errors.Count -gt 0) { throw "Baseline OCR reported $($errors.Count) image errors" }
+          "BASE_RESULT_DIR=$result" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build deterministic OCR-only label-region views
+        shell: pwsh
+        run: |
+          python -m pip install pillow
+          python scripts/label_region_views.py --images "$env:IMAGE_DIR" --detections "$env:BASE_RESULT_DIR\RapidOCR_Detections.csv" --out-dir label-region-views --expected-count 123
+          if ($LASTEXITCODE -ne 0) { throw "Label-region view generation failed" }
+          $views = @(Get-ChildItem label-region-views -File -Filter "*__label.jpg")
+          if ($views.Count -ne 123) { throw "Expected exactly 123 label-region views; found $($views.Count)" }
+
+      - name: OCR label-region views at 3072
+        shell: pwsh
+        run: |
+          & .\sweep-publish\DriveLabelSweep.exe "label-region-views" "3072"
+          if ($LASTEXITCODE -ne 0) { throw "Label-region OCR sweep failed" }
+          $sweep = Get-ChildItem "label-region-views" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$sweep) { throw "Label-region OCR output folder missing" }
+          $result = Join-Path $sweep.FullName "maxSideLen_3072"
+          $rows = @(Import-Csv (Join-Path $result "RapidOCR_Images.csv"))
+          if ($rows.Count -ne 123) { throw "Label-region OCR coverage failed: $($rows.Count)/123" }
+          $errors = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Error) })
+          if ($errors.Count -gt 0) { throw "Label-region OCR reported $($errors.Count) image errors" }
+          "LABEL_RESULT_DIR=$result" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Verify diagnostic isolation
+        shell: pwsh
+        run: |
+          if (Test-Path "data/Camera-Lab-Ground-Truth.csv") {
+            Write-Host "Ground-truth file is present in the repository but was not passed to any inference or diagnostic command."
+          }
+          $map = @(Import-Csv label-region-views/Label-Region-Map.csv)
+          if ($map.Count -ne 123) { throw "Label-region map coverage failed: $($map.Count)/123" }
+          $fallbacks = @($map | Where-Object { $_.Method -eq 'full-frame-fallback' }).Count
+          "### Label-region OCR evidence" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- Physical source images: **123**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- Deterministic label views: **123**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- Full-frame geometry fallbacks: **$fallbacks**" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "- Ground truth consumed by diagnostic: **false**" | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Collect evidence
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path diagnostic-results\baseline | Out-Null
+          New-Item -ItemType Directory -Force -Path diagnostic-results\label-region | Out-Null
+          if ($env:BASE_RESULT_DIR -and (Test-Path $env:BASE_RESULT_DIR)) { Copy-Item "$env:BASE_RESULT_DIR\RapidOCR_*.csv" diagnostic-results\baseline\ -Force -ErrorAction SilentlyContinue }
+          if ($env:LABEL_RESULT_DIR -and (Test-Path $env:LABEL_RESULT_DIR)) { Copy-Item "$env:LABEL_RESULT_DIR\RapidOCR_*.csv" diagnostic-results\label-region\ -Force -ErrorAction SilentlyContinue }
+          Copy-Item label-region-views\Label-Region-Map.csv diagnostic-results\label-region\ -Force -ErrorAction SilentlyContinue
+
+      - name: Upload label-region evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camera-Lab-123-Label-Region-Evidence-${{ github.run_number }}
+          path: diagnostic-results/**
+          if-no-files-found: warn
+          retention-days: 14
