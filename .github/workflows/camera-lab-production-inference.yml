@@ -7,11 +7,13 @@ on:
     paths:
       - ".github/workflows/camera-lab-production-inference.yml"
       - "scripts/production_inference.py"
+      - "scripts/validate_inference_contract.py"
       - "scripts/score_production_inference.py"
       - "scripts/serial_postprocess.py"
       - "scripts/model_postprocess.py"
       - "scripts/model_target_crop.py"
       - "scripts/capacity_postprocess.py"
+      - "docs/Camera-Lab-Inference-Contract-v1.md"
       - "data/**"
       - "*Part*.zip"
       - "Camera%20Roll%20-%20Part%*.zip"
@@ -118,6 +120,14 @@ jobs:
           if ([int]$s.images -ne 123) { throw "Production inference coverage failed: $($s.images)/123" }
           if ([bool]$s.ground_truth_consumed) { throw "Production inference must never consume ground truth" }
 
+      - name: Enforce production inference contract v1
+        shell: pwsh
+        run: |
+          python scripts/validate_inference_contract.py --inference production-results/Camera-Lab-Production-Inference.csv --summary production-results/Camera-Lab-Production-Inference-Summary.json --expected-images 123 --out-dir contract-results
+          if ($LASTEXITCODE -ne 0) { throw "Production inference contract validation failed" }
+          $c = Get-Content contract-results/Camera-Lab-Inference-Contract-Validation.json -Raw | ConvertFrom-Json
+          "Inference contract: v$($c.contract_version) $($c.status); rows=$($c.rows); ground truth consumed=$($c.ground_truth_consumed)" | Add-Content $env:GITHUB_STEP_SUMMARY
+
       - name: Validate production outputs on verified subset
         shell: pwsh
         run: |
@@ -132,6 +142,7 @@ jobs:
           name: Camera-Lab-123-Production-Inference-${{ github.run_number }}
           path: |
             production-results/**
+            contract-results/**
             validation-results/**
           if-no-files-found: warn
           retention-days: 30
