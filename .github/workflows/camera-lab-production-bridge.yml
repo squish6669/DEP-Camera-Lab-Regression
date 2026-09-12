@@ -8,7 +8,7 @@ on:
       - ".github/workflows/camera-lab-production-bridge.yml"
       - "scripts/run_camera_lab_bridge.py"
       - "scripts/production_inference.py"
-      - "scripts/production_inference_validate.py"
+      - "scripts/score_production_inference.py"
       - "scripts/model_target_crop.py"
       - "scripts/model_postprocess.py"
       - "scripts/serial_postprocess.py"
@@ -118,13 +118,13 @@ jobs:
       - name: Validate production bridge outputs only after inference
         shell: pwsh
         run: |
-          python scripts/production_inference_validate.py --ground-truth data/Camera-Lab-Ground-Truth.csv --inference production-results/Camera-Lab-Production-Inference.csv --out-dir validation-results
+          python scripts/score_production_inference.py --ground-truth data/Camera-Lab-Ground-Truth.csv --inference production-results/Camera-Lab-Production-Inference.csv --out-dir validation-results --serial-min-pct $env:SERIAL_NO_REGRESSION_MIN_PCT --model-min-exact 64 --capacity-min-exact 66
           if ($LASTEXITCODE -ne 0) { throw "Production bridge validation scorer failed" }
-          $v = Get-Content validation-results/Camera-Lab-Production-Validation-Summary.json -Raw | ConvertFrom-Json
+          $v = Get-Content validation-results/Production-Inference-Validation.json -Raw | ConvertFrom-Json
           if ([double]$v.serial_pct -lt [double]$env:SERIAL_NO_REGRESSION_MIN_PCT) { throw "Production serial safety gate regressed: $($v.serial_pct)%" }
           if ([double]$v.model_pct -lt [double]$env:MODEL_BASELINE_MIN_PCT) { throw "Production model baseline regressed: $($v.model_pct)%" }
           if ([double]$v.capacity_pct -lt [double]$env:CAPACITY_BASELINE_MIN_PCT) { throw "Production capacity baseline regressed: $($v.capacity_pct)%" }
-          Get-Content validation-results/Camera-Lab-Production-Validation-Summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content validation-results/Production-Inference-Validation.md | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Upload production bridge evidence
         if: always()
