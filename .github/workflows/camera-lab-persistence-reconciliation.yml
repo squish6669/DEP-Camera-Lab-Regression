@@ -1,0 +1,117 @@
+name: Camera Lab Persistence Reconciliation Chain
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/camera-lab-persistence-reconciliation.yml"
+      - "scripts/build_scan_records.py"
+      - "scripts/reconcile_operational_records.py"
+
+permissions:
+  contents: read
+
+jobs:
+  persistence-reconciliation:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile persistence and reconciliation bridges
+        shell: pwsh
+        run: |
+          python -m py_compile scripts/build_scan_records.py
+          if ($LASTEXITCODE -ne 0) { throw "Scan record bridge compile failed" }
+          python -m py_compile scripts/reconcile_operational_records.py
+          if ($LASTEXITCODE -ne 0) { throw "Reconciliation bridge compile failed" }
+
+      - name: Create deterministic operational fixture
+        shell: pwsh
+        run: |
+          @'
+          Image,Serial,LookupStatus,CertMatchMethod,CertMatchCount,CertId,CertPath,PendingDestructionBin,DestructionStatus,SerialStatus,ModelStatus,CapacityStatus
+          pending.jpg,ABC123456,NO_CERT,0,,,,DS-03,PENDING_DESTRUCTION,FOUND,FOUND,READY
+          unresolved.jpg,XYZ987654,NO_CERT,0,,,,,,FOUND,FOUND,READY
+          duplicate.jpg,DUP111222,NO_CERT,0,,,,,,FOUND,FOUND,READY
+          already-found.jpg,FOUND123,CERT_FOUND,EXACT_NORMALIZED_SERIAL,1,COD-OLD,G:\Digital Equity\Repository\COD-OLD.pdf,,,FOUND,FOUND,READY
+          review.jpg,REVIEW123,REVIEW,0,,,,,,REVIEW,FOUND,READY
+          '@ | Set-Content -Encoding utf8 operational.csv
+
+          @'
+          Serial,CertId,CertPath
+          ABC-123-456,COD-NEW,G:\Digital Equity\Repository\COD-NEW.pdf
+          DUP111222,COD-DUP-1,G:\Digital Equity\Repository\COD-DUP-1.pdf
+          DUP-111-222,COD-DUP-2,G:\Digital Equity\Repository\COD-DUP-2.pdf
+          FOUND123,COD-REPLACEMENT,G:\Digital Equity\Repository\COD-REPLACEMENT.pdf
+          '@ | Set-Content -Encoding utf8 certs.csv
+
+      - name: Persist operational records first
+        shell: pwsh
+        run: |
+          python scripts/build_scan_records.py --records operational.csv --out-dir persisted --expected-count 5
+          if ($LASTEXITCODE -ne 0) { throw "Persistent scan record build failed" }
+
+      - name: Reconcile only from persistent scan records
+        shell: pwsh
+        run: |
+          python scripts/reconcile_operational_records.py --records persisted/Camera-Lab-Scan-Records.csv --cert-index certs.csv --out-dir reconciliation
+          if ($LASTEXITCODE -ne 0) { throw "Persistent reconciliation failed" }
+
+      - name: Verify stable record identity survives reconciliation
+        shell: pwsh
+        run: |
+          $before = @(Import-Csv persisted/Camera-Lab-Scan-Records.csv)
+          $after = @(Import-Csv reconciliation/Camera-Lab-Reconciliation.csv)
+          if ($before.Count -ne 5 -or $after.Count -ne 5) { throw "Unexpected persistent record count" }
+          foreach ($b in $before) {
+            $a = $after | Where-Object RecordId -eq $b.RecordId
+            if (-not $a) { throw "Stable RecordId missing after reconciliation: $($b.RecordId)" }
+            if ($a.Image -ne $b.Image -or $a.Serial -ne $b.Serial) { throw "Persistent record identity changed during reconciliation" }
+          }
+
+      - name: Verify later unique cert is recommendation only
+        shell: pwsh
+        run: |
+          $r = @(Import-Csv reconciliation/Camera-Lab-Reconciliation.csv)
+          $pending = $r | Where-Object Image -eq 'pending.jpg'
+          if ($pending.ReconciliationStatus -ne 'RECONCILED_CERT_FOUND') { throw "Unique later certificate did not reconcile" }
+          if ($pending.ReconciliationMatchMethod -ne 'EXACT_NORMALIZED_SERIAL') { throw "Unsafe reconciliation method" }
+          if ($pending.ReconciledCertId -ne 'COD-NEW') { throw "Explicit later certificate metadata was not preserved" }
+          if ($pending.RecommendedAction -ne 'REMOVE_FROM_PENDING_DESTRUCTION') { throw "Expected pending-destruction removal recommendation missing" }
+          if ($pending.PendingDestructionBin -ne 'DS-03' -or $pending.DestructionStatus -ne 'PENDING_DESTRUCTION') { throw "Reconciliation silently mutated destruction history" }
+
+      - name: Verify unresolved and ambiguous records remain safe
+        shell: pwsh
+        run: |
+          $r = @(Import-Csv reconciliation/Camera-Lab-Reconciliation.csv)
+          $unresolved = $r | Where-Object Image -eq 'unresolved.jpg'
+          $duplicate = $r | Where-Object Image -eq 'duplicate.jpg'
+          if ($unresolved.ReconciliationStatus -ne 'STILL_NO_CERT') { throw "Unmatched record changed incorrectly" }
+          if ($duplicate.ReconciliationStatus -ne 'REVIEW') { throw "Duplicate exact matches must route to REVIEW" }
+          if ([int]$duplicate.ReconciliationMatchCount -ne 2) { throw "Ambiguous match count was not retained" }
+          if ($duplicate.ReconciledCertId -or $duplicate.ReconciledCertPath) { throw "Ambiguous match selected certificate metadata" }
+
+      - name: Verify existing non-NO_CERT states are untouched
+        shell: pwsh
+        run: |
+          $r = @(Import-Csv reconciliation/Camera-Lab-Reconciliation.csv)
+          $found = $r | Where-Object Image -eq 'already-found.jpg'
+          $review = $r | Where-Object Image -eq 'review.jpg'
+          if ($found.ReconciliationStatus -ne 'NOT_ELIGIBLE' -or $review.ReconciliationStatus -ne 'NOT_ELIGIBLE') { throw "Non-NO_CERT state entered automatic reconciliation" }
+          if ($found.CertId -ne 'COD-OLD') { throw "Existing certificate history changed" }
+          if ($found.ReconciledCertId -or $review.ReconciledCertId) { throw "Non-eligible state received invented reconciliation metadata" }
+
+      - name: Verify reconciliation safety summary
+        shell: pwsh
+        run: |
+          $s = Get-Content reconciliation/Camera-Lab-Reconciliation-Summary.json -Raw | ConvertFrom-Json
+          if ([int]$s.records -ne 5) { throw "Unexpected reconciliation count" }
+          if ([int]$s.eligible_no_cert -ne 3) { throw "Unexpected eligible NO_CERT count" }
+          if ([int]$s.reconciled_cert_found -ne 1 -or [int]$s.still_no_cert -ne 1 -or [int]$s.review -ne 1) { throw "Unexpected reconciliation outcomes" }
+          if ($s.match_policy -ne 'unique exact normalized serial only') { throw "Reconciliation policy changed" }
+          if ([bool]$s.automatic_destruction_history_mutation) { throw "Destruction history must never mutate automatically" }
