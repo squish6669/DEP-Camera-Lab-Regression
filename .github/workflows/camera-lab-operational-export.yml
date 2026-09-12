@@ -1,0 +1,61 @@
+name: Camera Lab Operational Export Safety
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/export_operational_views.py'
+      - '.github/workflows/camera-lab-operational-export.yml'
+
+jobs:
+  export-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile operational export bridge
+        run: python -m py_compile scripts/export_operational_views.py
+      - name: Create deterministic operational fixture
+        shell: bash
+        run: |
+          mkdir -p fixture out
+          cat > fixture/records.csv <<'CSV'
+          Image,Serial,LookupStatus,CertId,CertPath,PendingDestructionBin,DestructionStatus
+          cert.jpg,SER001,CERT_FOUND,COD-1,/certs/cod1.pdf,,
+          nocert.jpg,SER002,NO_CERT,,,DS-01,PENDING_DESTRUCTION
+          review.jpg,,REVIEW,,,,
+          unchecked.jpg,SER004,NOT_CHECKED,,,,
+          CSV
+      - name: Export operational views
+        run: python scripts/export_operational_views.py --records fixture/records.csv --out-dir out
+      - name: Verify export counts and safety flags
+        shell: python
+        run: |
+          import csv,json
+          from pathlib import Path
+          def count(name):
+              with open(Path('out')/name,encoding='utf-8-sig',newline='') as f:
+                  return len(list(csv.DictReader(f)))
+          assert count('Camera-Lab-Cert-Found.csv')==1
+          assert count('Camera-Lab-No-Cert.csv')==1
+          assert count('Camera-Lab-Review.csv')==2
+          assert count('Camera-Lab-Pending-Destruction.csv')==1
+          s=json.load(open('out/Camera-Lab-Operational-Export-Summary.json',encoding='utf-8'))
+          assert s['records']==4
+          assert s['certificate_matching_performed'] is False
+          assert s['status_reinterpretation'] is False
+          assert s['destruction_assignment_mutation'] is False
+      - name: Verify invalid destruction state is rejected
+        shell: bash
+        run: |
+          cat > fixture/invalid.csv <<'CSV'
+          Image,Serial,LookupStatus,CertId,CertPath,PendingDestructionBin,DestructionStatus
+          bad.jpg,SER999,CERT_FOUND,COD-9,/certs/cod9.pdf,DS-02,PENDING_DESTRUCTION
+          CSV
+          if python scripts/export_operational_views.py --records fixture/invalid.csv --out-dir invalid-out; then
+            echo 'Unsafe invalid state was accepted' >&2
+            exit 1
+          fi
