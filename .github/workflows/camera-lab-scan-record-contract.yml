@@ -1,0 +1,94 @@
+name: Camera Lab Scan Record Contract Safety
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/camera-lab-scan-record-contract.yml"
+      - "scripts/build_scan_records.py"
+
+permissions:
+  contents: read
+
+jobs:
+  scan-record-safety:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile scan record bridge
+        shell: pwsh
+        run: python -m py_compile scripts/build_scan_records.py
+
+      - name: Create deterministic fixtures
+        shell: pwsh
+        run: |
+          @'
+          Image,Manufacturer,Serial,Model,Capacity,ManufacturerEvidence,SerialEvidence,ModelEvidence,CapacityEvidence,SerialStatus,ModelStatus,CapacityStatus,LookupStatus,CertMatchMethod,CertMatchCount,CertId,CertPath,PendingDestructionBin,DestructionStatus
+          cert.jpg,SAMSUNG,SER001,MZ7LN256,256 GB,label,serial,model,capacity,FOUND,FOUND,READY,CERT_FOUND,EXACT_NORMALIZED_SERIAL,1,COD-1,G:\Digital Equity\Repository\COD-1.pdf,,
+          nocert.jpg,INTEL,SER002,SSDPEMKF256,256 GB,label,serial,model,capacity,FOUND,FOUND,READY,NO_CERT,,0,,,DS-01,PENDING_DESTRUCTION
+          review.jpg,WDC,,WDC MODEL,512 GB,label,,model,capacity,REVIEW,FOUND,READY,REVIEW,,0,,,,
+          '@ | Set-Content -Encoding utf8 records.csv
+
+          @'
+          Image,SourcePath,CapturedAt,ManualCorrectionApplied,ManualCorrectionNote
+          cert.jpg,G:\Camera Roll\cert.jpg,2026-09-12T01:00:00-07:00,false,
+          nocert.jpg,G:\Camera Roll\nocert.jpg,2026-09-12T01:01:00-07:00,true,operator confirmed serial
+          '@ | Set-Content -Encoding utf8 metadata.csv
+
+      - name: Build persistence-ready scan records
+        shell: pwsh
+        run: |
+          python scripts/build_scan_records.py --records records.csv --metadata metadata.csv --out-dir out --expected-count 3
+          if ($LASTEXITCODE -ne 0) { throw "Scan record bridge failed" }
+
+      - name: Verify persistence contract and provenance
+        shell: pwsh
+        run: |
+          $r = @(Import-Csv out/Camera-Lab-Scan-Records.csv)
+          if ($r.Count -ne 3) { throw "Unexpected scan record count" }
+          foreach ($row in $r) {
+            if ($row.RecordVersion -ne '1') { throw "Unexpected record version" }
+            if (-not $row.RecordId.StartsWith('CL-')) { throw "Stable record ID missing" }
+          }
+          $cert = $r | Where-Object Image -eq 'cert.jpg'
+          if ($cert.LookupStatus -ne 'CERT_FOUND' -or $cert.CertMatchMethod -ne 'EXACT_NORMALIZED_SERIAL' -or $cert.CertId -ne 'COD-1') { throw "Certificate provenance was not preserved" }
+          $no = $r | Where-Object Image -eq 'nocert.jpg'
+          if ($no.PendingDestructionBin -ne 'DS-01' -or $no.DestructionStatus -ne 'PENDING_DESTRUCTION') { throw "Pending destruction state was not preserved" }
+          if ($no.ManualCorrectionApplied -ne 'true') { throw "Explicit manual correction metadata was not preserved" }
+          $review = $r | Where-Object Image -eq 'review.jpg'
+          if ($review.NeedsReview -ne 'true') { throw "Review state was not preserved" }
+          if ($review.SourcePath -or $review.CapturedAt) { throw "Missing capture metadata must remain blank, not be invented" }
+
+      - name: Verify safety summary
+        shell: pwsh
+        run: |
+          $s = Get-Content out/Camera-Lab-Scan-Records-Summary.json -Raw | ConvertFrom-Json
+          if ([int]$s.records -ne 3) { throw "Unexpected summary record count" }
+          if ([bool]$s.capture_metadata_invented) { throw "Capture metadata may not be invented" }
+          if ([bool]$s.certificate_metadata_invented) { throw "Certificate metadata may not be invented" }
+
+      - name: Verify invalid destruction state is rejected
+        shell: pwsh
+        run: |
+          @'
+          Image,Serial,LookupStatus,CertMatchMethod,CertMatchCount,CertId,CertPath,PendingDestructionBin,DestructionStatus
+          bad.jpg,SERBAD,CERT_FOUND,EXACT_NORMALIZED_SERIAL,1,COD-BAD,G:\cert.pdf,DS-02,PENDING_DESTRUCTION
+          '@ | Set-Content -Encoding utf8 invalid.csv
+          python scripts/build_scan_records.py --records invalid.csv --out-dir invalid-out
+          if ($LASTEXITCODE -eq 0) { throw "CERT_FOUND destruction assignment was incorrectly accepted" }
+
+      - name: Verify fake certificate metadata is rejected
+        shell: pwsh
+        run: |
+          @'
+          Image,Serial,LookupStatus,CertMatchMethod,CertMatchCount,CertId,CertPath,PendingDestructionBin,DestructionStatus
+          bad-cert.jpg,SERBAD,NO_CERT,,0,COD-FAKE,G:\fake.pdf,,
+          '@ | Set-Content -Encoding utf8 invalid-cert.csv
+          python scripts/build_scan_records.py --records invalid-cert.csv --out-dir invalid-cert-out
+          if ($LASTEXITCODE -eq 0) { throw "Non-CERT_FOUND record with certificate metadata was incorrectly accepted" }
