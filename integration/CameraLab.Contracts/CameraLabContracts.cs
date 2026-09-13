@@ -120,6 +120,47 @@ public sealed record PendingDestructionAssignmentV1(string Image, string Serial,
         CameraLabContractV1.IsAllowedDestructionBin(Bin);
 }
 
+public sealed record PendingDestructionAssignmentRequestV1(
+    CameraLabInferenceV1 Inference,
+    CertificateLookupResultV1 Certificate,
+    string Bin);
+
+public sealed record PendingDestructionAssignmentDecisionV1(
+    bool Accepted,
+    string Reason,
+    PendingDestructionAssignmentV1? Assignment);
+
+public static class PendingDestructionPlannerV1
+{
+    public static PendingDestructionAssignmentDecisionV1 Evaluate(PendingDestructionAssignmentRequestV1 request)
+    {
+        if (request.Inference is null || request.Certificate is null)
+            return new PendingDestructionAssignmentDecisionV1(false, "INVALID_INPUT", null);
+
+        if (!string.Equals(request.Inference.SerialStatus, "FOUND", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(request.Inference.Serial))
+            return new PendingDestructionAssignmentDecisionV1(false, "SERIAL_NOT_PRODUCTION_APPROVED", null);
+
+        if (!request.Certificate.IsValid())
+            return new PendingDestructionAssignmentDecisionV1(false, "INVALID_CERTIFICATE_RESULT", null);
+
+        if (!string.Equals(request.Certificate.LookupStatus, "NO_CERT", StringComparison.Ordinal))
+            return new PendingDestructionAssignmentDecisionV1(false, "CERTIFICATE_STATUS_NOT_NO_CERT", null);
+
+        if (!CameraLabContractV1.IsAllowedDestructionBin(request.Bin))
+            return new PendingDestructionAssignmentDecisionV1(false, "INVALID_DESTRUCTION_BIN", null);
+
+        var assignment = new PendingDestructionAssignmentV1(
+            request.Inference.Image,
+            request.Inference.Serial,
+            request.Bin.Trim().ToUpperInvariant());
+
+        return assignment.IsValid()
+            ? new PendingDestructionAssignmentDecisionV1(true, "ASSIGNED_PENDING_DESTRUCTION", assignment)
+            : new PendingDestructionAssignmentDecisionV1(false, "INVALID_ASSIGNMENT", null);
+    }
+}
+
 public sealed record CameraLabScanRecordV1(
     string RecordId,
     CameraLabInferenceV1 Inference,
