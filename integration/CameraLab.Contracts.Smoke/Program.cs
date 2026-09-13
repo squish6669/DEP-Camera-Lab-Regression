@@ -91,6 +91,12 @@ Require(!PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssignmentRe
 var reviewInference = inference with { SerialStatus = "REVIEW" };
 Require(!PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssignmentRequestV1(reviewInference, noCert, "DS-01")).Accepted,
     "Non-FOUND serials must never enter pending destruction tracking");
+var unsafePersistedPending = pending with { Inference = reviewInference };
+Require(!unsafePersistedPending.IsValid(),
+    "A persisted pending-destruction record must fail closed if its serial is no longer production-approved");
+var blankSerialPending = pending with { Inference = inference with { Serial = "" } };
+Require(!blankSerialPending.IsValid(),
+    "A persisted pending-destruction record must fail closed if its serial identity is blank");
 
 var inference2 = inference with { Image = "contract-smoke-image-2", Serial = "SERIAL2" };
 var pending2 = new CameraLabScanRecordV1("record-contract-smoke-2", inference2, noCert, "DS-01", "PENDING_DESTRUCTION");
