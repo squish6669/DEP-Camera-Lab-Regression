@@ -7,6 +7,32 @@ public sealed record CertificateReconciliationResultV1(
 
 public static class CertificateReconciliationPlannerV1
 {
+    public static CertificateReconciliationResultV1 RefreshFromLookup(
+        CameraLabScanRecordV1? existing,
+        ICertificateLookupV1? lookup)
+    {
+        if (existing is null || lookup is null)
+            return new CertificateReconciliationResultV1(false, "INVALID_INPUT", null);
+
+        if (!existing.IsValid())
+            return new CertificateReconciliationResultV1(false, "INVALID_EXISTING_RECORD", null);
+
+        if (!string.Equals(existing.Inference.SerialStatus, "FOUND", StringComparison.Ordinal) ||
+            CameraLabContractV1.NormalizeSerial(existing.Inference.Serial).Length == 0)
+            return new CertificateReconciliationResultV1(false, "SERIAL_NOT_PRODUCTION_APPROVED", null);
+
+        var request = new CertificateLookupRequestV1(
+            existing.Inference.Serial,
+            existing.Inference.SerialStatus,
+            existing.Inference.Image);
+
+        if (!request.IsEligibleForLookup())
+            return new CertificateReconciliationResultV1(false, "SERIAL_NOT_PRODUCTION_APPROVED", null);
+
+        var refreshedCertificate = lookup.Lookup(request);
+        return Reconcile(existing, refreshedCertificate);
+    }
+
     public static CertificateReconciliationResultV1 Reconcile(
         CameraLabScanRecordV1? existing,
         CertificateLookupResultV1? refreshedCertificate)
