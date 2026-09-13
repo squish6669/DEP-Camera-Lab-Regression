@@ -178,3 +178,72 @@ public sealed record CameraLabScanRecordV1(
                DestructionStatus == "PENDING_DESTRUCTION";
     }
 }
+
+public sealed record PendingDestructionBatchEntryV1(string RecordId, string Image, string Serial)
+{
+    public bool IsValid() =>
+        !string.IsNullOrWhiteSpace(RecordId) &&
+        !string.IsNullOrWhiteSpace(Image) &&
+        CameraLabContractV1.NormalizeSerial(Serial).Length > 0;
+}
+
+public sealed record PendingDestructionBatchV1(
+    string BatchId,
+    string Bin,
+    IReadOnlyList<PendingDestructionBatchEntryV1> Entries)
+{
+    public bool IsValid()
+    {
+        if (string.IsNullOrWhiteSpace(BatchId) || !CameraLabContractV1.IsAllowedDestructionBin(Bin)) return false;
+        if (Entries is null || Entries.Count == 0 || Entries.Any(entry => entry is null || !entry.IsValid())) return false;
+        if (Entries.Select(entry => entry.RecordId).Distinct(StringComparer.Ordinal).Count() != Entries.Count) return false;
+        return Entries.Select(entry => CameraLabContractV1.NormalizeSerial(entry.Serial))
+            .Distinct(StringComparer.Ordinal).Count() == Entries.Count;
+    }
+}
+
+public sealed record PendingDestructionBatchBuildResultV1(
+    bool Accepted,
+    string Reason,
+    PendingDestructionBatchV1? Batch);
+
+public static class PendingDestructionBatchPlannerV1
+{
+    public static PendingDestructionBatchBuildResultV1 Build(
+        string BatchId,
+        string Bin,
+        IEnumerable<CameraLabScanRecordV1>? records)
+    {
+        if (string.IsNullOrWhiteSpace(BatchId))
+            return new PendingDestructionBatchBuildResultV1(false, "INVALID_BATCH_ID", null);
+        if (!CameraLabContractV1.IsAllowedDestructionBin(Bin))
+            return new PendingDestructionBatchBuildResultV1(false, "INVALID_DESTRUCTION_BIN", null);
+        if (records is null)
+            return new PendingDestructionBatchBuildResultV1(false, "NO_RECORDS", null);
+
+        var canonicalBin = Bin.Trim().ToUpperInvariant();
+        var source = records.ToArray();
+        if (source.Length == 0)
+            return new PendingDestructionBatchBuildResultV1(false, "NO_RECORDS", null);
+        if (source.Any(record => record is null || !record.IsValid()))
+            return new PendingDestructionBatchBuildResultV1(false, "INVALID_SCAN_RECORD", null);
+        if (source.Any(record => !string.Equals(record.PendingDestructionBin, canonicalBin, StringComparison.Ordinal)))
+            return new PendingDestructionBatchBuildResultV1(false, "CROSS_BIN_RECORD", null);
+        if (source.Select(record => record.RecordId).Distinct(StringComparer.Ordinal).Count() != source.Length)
+            return new PendingDestructionBatchBuildResultV1(false, "DUPLICATE_RECORD_ID", null);
+
+        var normalizedSerials = source.Select(record => CameraLabContractV1.NormalizeSerial(record.Inference.Serial)).ToArray();
+        if (normalizedSerials.Any(serial => serial.Length == 0) ||
+            normalizedSerials.Distinct(StringComparer.Ordinal).Count() != source.Length)
+            return new PendingDestructionBatchBuildResultV1(false, "DUPLICATE_OR_INVALID_SERIAL", null);
+
+        var entries = source
+            .Select(record => new PendingDestructionBatchEntryV1(record.RecordId, record.Inference.Image, record.Inference.Serial))
+            .ToArray();
+        var batch = new PendingDestructionBatchV1(BatchId.Trim(), canonicalBin, entries);
+
+        return batch.IsValid()
+            ? new PendingDestructionBatchBuildResultV1(true, "BATCH_READY", batch)
+            : new PendingDestructionBatchBuildResultV1(false, "INVALID_BATCH", null);
+    }
+}
