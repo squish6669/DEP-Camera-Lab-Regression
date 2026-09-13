@@ -3,6 +3,12 @@ using Dep.CameraLab.Contracts;
 
 internal static class OperationalBridgeSmoke
 {
+    private sealed class ThrowingCertificateLookup : ICertificateLookupV1
+    {
+        public CertificateLookupResultV1 Lookup(CertificateLookupRequestV1 request) =>
+            throw new InvalidOperationException("simulated certificate index failure");
+    }
+
     [ModuleInitializer]
     internal static void Run()
     {
@@ -69,5 +75,9 @@ internal static class OperationalBridgeSmoke
         var rejected = CameraLabOperationalBridgeV1.Process("REC-5", invalid, certLookup);
         Require(!rejected.Accepted && rejected.Reason == "INVALID_INFERENCE",
             "Evidence-contract drift must fail before certificate lookup or persistence");
+
+        var lookupFailure = CameraLabOperationalBridgeV1.Process("REC-6", valid, new ThrowingCertificateLookup());
+        Require(!lookupFailure.Accepted && lookupFailure.Reason == "CERTIFICATE_LOOKUP_ERROR" && lookupFailure.Record is null,
+            "A certificate lookup exception must fail closed without guessing NO_CERT or creating a record");
     }
 }
