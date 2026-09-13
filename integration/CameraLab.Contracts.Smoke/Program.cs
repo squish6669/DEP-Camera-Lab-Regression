@@ -62,7 +62,21 @@ var assignment = PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssi
 Require(assignment.Accepted && assignment.Assignment is not null && assignment.Assignment.Bin == "DS-12",
     "Production-approved NO_CERT record must be assignable only to canonical DS-01 through DS-12 bins");
 
+var unassignedRecord = new CameraLabScanRecordV1("record-unassigned", inference, noCert, "", "");
+var transitioned = PendingDestructionRecordTransitionV1.Assign(unassignedRecord, "ds-12");
+Require(transitioned.Accepted && transitioned.Record is not null && transitioned.Record.IsValid() &&
+        transitioned.Record.PendingDestructionBin == "DS-12" && transitioned.Record.DestructionStatus == "PENDING_DESTRUCTION",
+    "A valid unassigned NO_CERT record must transition atomically into an allowed canonical DS bin");
+Require(!PendingDestructionRecordTransitionV1.Assign(transitioned.Record, "DS-11").Accepted,
+    "An already-assigned pending-destruction record must not be silently moved to another bin");
+Require(!PendingDestructionRecordTransitionV1.Assign(unassignedRecord, "DS-13").Accepted,
+    "Record transition must reject bins outside DS-01 through DS-12");
+
 var found = new CertificateLookupResultV1("CERT_FOUND", 1, "CERT-ID", "CERT-PATH", "EXACT_NORMALIZED_SERIAL");
+var foundUnassigned = new CameraLabScanRecordV1("record-found-unassigned", inference, found, "", "");
+Require(!PendingDestructionRecordTransitionV1.Assign(foundUnassigned, "DS-01").Accepted,
+    "CERT_FOUND records must never transition into pending destruction");
+
 var unsafePending = new CameraLabScanRecordV1("record-contract-smoke-2", inference, found, "DS-01", "PENDING_DESTRUCTION");
 Require(!unsafePending.IsValid(), "CERT_FOUND record must never remain pending destruction");
 Require(!PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssignmentRequestV1(inference, found, "DS-01")).Accepted,
