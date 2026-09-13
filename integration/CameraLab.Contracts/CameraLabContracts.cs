@@ -86,6 +86,9 @@ public sealed class ExactSerialCertificateLookupV1 : ICertificateLookupV1
             return new CertificateLookupResultV1("REVIEW", matches.Length, "", "", "");
 
         var match = matches[0];
+        if (string.IsNullOrWhiteSpace(match.CertId) && string.IsNullOrWhiteSpace(match.CertPath))
+            return new CertificateLookupResultV1("REVIEW", 1, "", "", "");
+
         return new CertificateLookupResultV1(
             "CERT_FOUND",
             1,
@@ -107,7 +110,9 @@ public sealed record CertificateLookupResultV1(
         if (!CameraLabContractV1.AllowedLookupStatuses.Contains(LookupStatus)) return false;
         if (CertMatchCount < 0) return false;
         if (LookupStatus == "CERT_FOUND")
-            return CertMatchCount == 1 && CertMatchMethod == "EXACT_NORMALIZED_SERIAL";
+            return CertMatchCount == 1 &&
+                   CertMatchMethod == "EXACT_NORMALIZED_SERIAL" &&
+                   (!string.IsNullOrWhiteSpace(CertId) || !string.IsNullOrWhiteSpace(CertPath));
         return string.IsNullOrEmpty(CertMatchMethod) && string.IsNullOrEmpty(CertId) && string.IsNullOrEmpty(CertPath);
     }
 }
