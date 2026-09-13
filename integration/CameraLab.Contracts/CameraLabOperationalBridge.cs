@@ -36,7 +36,17 @@ public static class CameraLabOperationalBridgeV1
                 inference.Serial,
                 inference.SerialStatus,
                 inference.Image);
-            certificate = certificateLookup.Lookup(request);
+            try
+            {
+                certificate = certificateLookup.Lookup(request);
+            }
+            catch (Exception)
+            {
+                // External certificate data is operational input, not OCR ground truth.
+                // A lookup failure must never be converted into a guessed NO_CERT or
+                // allowed to create a persistent record with an actionable conclusion.
+                return new CameraLabOperationalBridgeResultV1(false, "CERTIFICATE_LOOKUP_ERROR", null);
+            }
         }
 
         if (certificate is null || !certificate.IsValid())
