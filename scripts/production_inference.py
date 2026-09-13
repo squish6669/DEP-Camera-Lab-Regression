@@ -137,6 +137,30 @@ def choose_alternate_model(man, view_names, detections):
     return candidate,min(scores),'two-view-exact-vendor-family-consensus'
 
 
+def choose_rotated_label_model(blocks):
+    """Recover an otherwise-empty manufacturer/model pair from one deterministic rotated label view.
+
+    The fallback is intentionally isolated from serial inference. It requires an explicit vendor label,
+    exactly one vendor-bounded model token, and literal OCR evidence for that normalized token. It never
+    synthesizes a model, never uses ground truth, and is called only after serial/capacity decisions are
+    already fixed for the physical image.
+    """
+    man,man_reason=infer_manufacturer(blocks)
+    if not man or 'label:' not in man_reason:
+        return None
+    exact={}
+    for score,candidate,reason in family_candidates(man,blocks):
+        literal=any(candidate and candidate in norm(b.get('Text') or '') for b in blocks)
+        bounded=('bounded-vendor-family' in reason) or ('model-anchor:' in reason)
+        if literal and bounded:
+            exact[candidate]=(score,reason)
+    if len(exact) != 1:
+        return None
+    candidate=next(iter(exact))
+    score,reason=exact[candidate]
+    return man,man_reason,candidate,score,reason
+
+
 def choose_alternate_capacity(view_names, detections):
     by_gb={}
     for view in view_names:
@@ -210,6 +234,7 @@ def main():
     images=list(csv.DictReader(open(a.images,encoding='utf-8-sig')))
     rows=[]
     alternate_model_fills=0
+    rotated_model_fills=0
     alternate_capacity_fills=0
     rotated_capacity_fills=0
     for image in images:
@@ -226,6 +251,9 @@ def main():
                 model,model_score,model_alt_reason=alt_model
                 model_reason='multiview:'+model_alt_reason+f':score={model_score}'
                 alternate_model_fills+=1
+        # Serial is intentionally finalized before any rotated-label manufacturer/model
+        # recovery below. The fallback therefore cannot alter serial selection or vendor
+        # correction behavior and cannot weaken the protected identity gate.
         serial,serial_score,serial_reason,serial_cands=choose_serial(man,blocks,model)
         caps=capacity_candidates(blocks,man)
         cap=caps[0] if caps else None
@@ -253,6 +281,17 @@ def main():
                 cap_evidence='rotated-label:'+alt['accept_reason']+':'+' || '.join(alt['evidence'][:4])
                 cap_status=confidence_bucket(cap_score)
                 rotated_capacity_fills+=1
+        # Isolated manufacturer/model recovery from the same deterministic rotated-label
+        # view. Only empty pairs are eligible, and serial/capacity are already finalized.
+        if not model and not man and rotated_views:
+            view_names=rotated_views.get(fn,[])
+            if len(view_names)==1:
+                rotated_model=choose_rotated_label_model(rotated_label.get(view_names[0],[]))
+                if rotated_model:
+                    man,rot_man_reason,model,model_score,rot_model_reason=rotated_model
+                    man_reason='rotated-label:'+rot_man_reason
+                    model_reason='rotated-label:literal-vendor-family:'+rot_model_reason+f':score={model_score}'
+                    rotated_model_fills+=1
         rows.append({
             'Image':fn,
             'Manufacturer':man,
@@ -283,6 +322,7 @@ def main():
         'model_found':sum(bool(r['Model']) for r in rows),
         'capacity_found':sum(bool(r['Capacity']) for r in rows),
         'model_multiview_fills':alternate_model_fills,
+        'rotated_label_model_fills':rotated_model_fills,
         'capacity_multiview_fills':alternate_capacity_fills,
         'rotated_label_capacity_fills':rotated_capacity_fills,
         'ground_truth_consumed':False,
