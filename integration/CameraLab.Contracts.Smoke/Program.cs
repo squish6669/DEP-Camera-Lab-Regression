@@ -143,6 +143,8 @@ var boundFound = CertificateReconciliationPlannerV1.RefreshFromLookup(pending, e
 Require(boundFound.Accepted && boundFound.Record is not null && boundFound.Record.Certificate.LookupStatus == "CERT_FOUND" &&
         string.IsNullOrEmpty(boundFound.Record.PendingDestructionBin) && string.IsNullOrEmpty(boundFound.Record.DestructionStatus),
     "Serial-bound reconciliation must remove pending destruction only when lookup for that record's own serial finds one exact certificate");
+Require(ReferenceEquals(boundFound.Record.Inference, pending.Inference),
+    "Serial-bound certificate reconciliation must not replace or rewrite OCR inference");
 
 var otherSerialOnlyLookup = new ExactSerialCertificateLookupV1(new[]
 {
@@ -155,15 +157,9 @@ Require(boundNoCert.Accepted && boundNoCert.Record is not null && boundNoCert.Re
 Require(!CertificateReconciliationPlannerV1.RefreshFromLookup(pending, null).Accepted,
     "Missing certificate lookup provider must fail closed");
 
-var reconciledFound = CertificateReconciliationPlannerV1.Reconcile(pending, found);
-Require(reconciledFound.Accepted && reconciledFound.Record is not null && reconciledFound.Record.IsValid(),
-    "A newly discovered unique exact certificate must safely reconcile an existing pending record");
-Require(reconciledFound.Record.Certificate.LookupStatus == "CERT_FOUND" &&
-        string.IsNullOrEmpty(reconciledFound.Record.PendingDestructionBin) &&
-        string.IsNullOrEmpty(reconciledFound.Record.DestructionStatus),
-    "CERT_FOUND reconciliation must remove the record from pending destruction without altering inference");
-Require(ReferenceEquals(reconciledFound.Record.Inference, pending.Inference),
-    "Certificate reconciliation must not replace or rewrite OCR inference");
+var unboundFound = CertificateReconciliationPlannerV1.Reconcile(pending, found);
+Require(!unboundFound.Accepted && unboundFound.Reason == "CERTIFICATE_RESULT_NOT_SERIAL_BOUND",
+    "A bare CERT_FOUND result must never clear pending destruction because it cannot prove which serial was queried");
 
 var reconciledNoCert = CertificateReconciliationPlannerV1.Reconcile(pending, noCert);
 Require(reconciledNoCert.Accepted && reconciledNoCert.Record is not null &&
