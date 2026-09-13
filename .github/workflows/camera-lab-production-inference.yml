@@ -217,7 +217,7 @@ jobs:
       - name: Validate production outputs on verified subset
         shell: pwsh
         run: |
-          python scripts/score_production_inference.py --ground-truth data/Camera-Lab-Ground-Truth.csv --inference production-results/Camera-Lab-Production-Inference.csv --out-dir validation-results --serial-min-pct $env:SERIAL_NO_REGRESSION_MIN_PCT --model-min-exact 64 --capacity-min-exact 66
+          python scripts/score_production_inference.py --ground-truth data/Camera-Lab-Ground-Truth.csv --inference production-results/Camera-Lab-Production-Inference.csv --out-dir validation-results --serial-min-pct $env:SERIAL_NO_REGRESSION_MIN_PCT --model-min-exact 66 --capacity-min-exact 68
           if ($LASTEXITCODE -ne 0) { throw "Production inference safety validation failed" }
           Get-Content validation-results/Production-Inference-Validation.md | Add-Content $env:GITHUB_STEP_SUMMARY
 
