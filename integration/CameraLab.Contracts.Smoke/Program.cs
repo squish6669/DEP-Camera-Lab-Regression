@@ -11,21 +11,47 @@ for (var i = 1; i <= 12; i++)
 Require(!CameraLabContractV1.IsAllowedDestructionBin("DS-00"), "DS-00 must be rejected");
 Require(!CameraLabContractV1.IsAllowedDestructionBin("DS-13"), "DS-13 must be rejected");
 
+Require(CameraLabContractV1.NormalizeSerial(" ab-12 34 ") == "AB1234", "Serial normalization must only remove separators and uppercase");
+
 var eligibleLookup = new CertificateLookupRequestV1("SERIAL1", "FOUND", "contract-smoke-image");
 Require(eligibleLookup.IsEligibleForLookup(), "Only a production-approved FOUND serial may enter certificate lookup");
 Require(!new CertificateLookupRequestV1("SERIAL1", "REVIEW", "contract-smoke-image").IsEligibleForLookup(), "REVIEW serial must not enter certificate lookup");
 Require(!new CertificateLookupRequestV1("", "FOUND", "contract-smoke-image").IsEligibleForLookup(), "Blank serial must not enter certificate lookup");
 
-var notChecked = new CertificateLookupResultV1("NOT_CHECKED", 0, "", "", "");
-Require(notChecked.IsValid(), "NOT_CHECKED without external cert data must be valid");
+var notCheckedLookup = new ExactSerialCertificateLookupV1(null);
+var notChecked = notCheckedLookup.Lookup(eligibleLookup);
+Require(notChecked.LookupStatus == "NOT_CHECKED" && notChecked.IsValid(), "Missing external certificate index must remain NOT_CHECKED");
 
-var ambiguous = new CertificateLookupResultV1("REVIEW", 2, "", "", "");
-Require(ambiguous.IsValid(), "Ambiguous exact matches must remain REVIEW without selecting a certificate");
+var noCertLookup = new ExactSerialCertificateLookupV1(Array.Empty<CertificateIndexRecordV1>());
+var noCert = noCertLookup.Lookup(eligibleLookup);
+Require(noCert.LookupStatus == "NO_CERT" && noCert.CertMatchCount == 0 && noCert.IsValid(), "Supplied index with no exact serial must return NO_CERT");
+
+var exactLookup = new ExactSerialCertificateLookupV1(new[]
+{
+    new CertificateIndexRecordV1("SER-IAL1", "CERT-ID", "CERT-PATH")
+});
+var exact = exactLookup.Lookup(eligibleLookup);
+Require(exact.LookupStatus == "CERT_FOUND" && exact.CertMatchCount == 1 && exact.CertId == "CERT-ID" && exact.IsValid(),
+    "Unique exact normalized serial must be the only accepted certificate match");
+
+var ambiguousLookup = new ExactSerialCertificateLookupV1(new[]
+{
+    new CertificateIndexRecordV1("SERIAL1", "CERT-A", "PATH-A"),
+    new CertificateIndexRecordV1("SER-IAL1", "CERT-B", "PATH-B")
+});
+var ambiguous = ambiguousLookup.Lookup(eligibleLookup);
+Require(ambiguous.LookupStatus == "REVIEW" && ambiguous.CertMatchCount == 2 && ambiguous.IsValid(),
+    "Multiple exact normalized matches must remain REVIEW without selecting a certificate");
+Require(string.IsNullOrEmpty(ambiguous.CertId) && string.IsNullOrEmpty(ambiguous.CertPath),
+    "Ambiguous matches must not leak a guessed certificate selection");
+
+var unsafeRequest = exactLookup.Lookup(new CertificateLookupRequestV1("SERIAL1", "REVIEW", "contract-smoke-image"));
+Require(unsafeRequest.LookupStatus == "REVIEW" && unsafeRequest.CertMatchCount == 0,
+    "Non-FOUND production serials must never enter certificate matching");
 
 var invalidFound = new CertificateLookupResultV1("CERT_FOUND", 2, "", "", "EXACT_NORMALIZED_SERIAL");
 Require(!invalidFound.IsValid(), "CERT_FOUND must never accept multiple matches");
 
-var noCert = new CertificateLookupResultV1("NO_CERT", 0, "", "", "");
 var inference = new CameraLabInferenceV1(
     "contract-smoke-image", "", "no-vendor-evidence", "SERIAL1", 0, "FOUND", "contract-only", "",
     "", "REVIEW", "no-model-candidate", "", null, 0, "REVIEW", "");
