@@ -78,4 +78,30 @@ var reviewInference = inference with { SerialStatus = "REVIEW" };
 Require(!PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssignmentRequestV1(reviewInference, noCert, "DS-01")).Accepted,
     "Non-FOUND serials must never enter pending destruction tracking");
 
+var inference2 = inference with { Image = "contract-smoke-image-2", Serial = "SERIAL2" };
+var pending2 = new CameraLabScanRecordV1("record-contract-smoke-2", inference2, noCert, "DS-01", "PENDING_DESTRUCTION");
+var batch = PendingDestructionBatchPlannerV1.Build("batch-smoke", "ds-01", new[] { pending, pending2 });
+Require(batch.Accepted && batch.Batch is not null && batch.Batch.IsValid() && batch.Batch.Bin == "DS-01" && batch.Batch.Entries.Count == 2,
+    "A DS batch must accept only valid unique NO_CERT pending records from one canonical bin");
+
+var crossBin = pending2 with { PendingDestructionBin = "DS-02" };
+Require(!PendingDestructionBatchPlannerV1.Build("batch-cross-bin", "DS-01", new[] { pending, crossBin }).Accepted,
+    "A destruction batch must never mix records from different DS bins");
+
+var duplicateRecord = pending2 with { RecordId = pending.RecordId };
+Require(!PendingDestructionBatchPlannerV1.Build("batch-duplicate-record", "DS-01", new[] { pending, duplicateRecord }).Accepted,
+    "A destruction batch must reject duplicate persistent record identities");
+
+var duplicateSerialInference = inference2 with { Serial = "SER-IAL1" };
+var duplicateSerial = pending2 with { Inference = duplicateSerialInference };
+Require(!PendingDestructionBatchPlannerV1.Build("batch-duplicate-serial", "DS-01", new[] { pending, duplicateSerial }).Accepted,
+    "A destruction batch must reject duplicate normalized serial identities");
+
+Require(!PendingDestructionBatchPlannerV1.Build("batch-cert-found", "DS-01", new[] { pending, unsafePending }).Accepted,
+    "CERT_FOUND records must never enter a pending-destruction batch");
+Require(!PendingDestructionBatchPlannerV1.Build("batch-invalid-bin", "DS-13", new[] { pending }).Accepted,
+    "A destruction batch must remain confined to DS-01 through DS-12");
+Require(!PendingDestructionBatchPlannerV1.Build("batch-empty", "DS-01", Array.Empty<CameraLabScanRecordV1>()).Accepted,
+    "An empty destruction batch must not be created");
+
 Console.WriteLine("Camera Lab app integration contract v1 smoke checks passed.");
