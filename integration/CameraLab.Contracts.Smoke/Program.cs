@@ -58,8 +58,24 @@ var inference = new CameraLabInferenceV1(
 var pending = new CameraLabScanRecordV1("record-contract-smoke", inference, noCert, "DS-01", "PENDING_DESTRUCTION");
 Require(pending.IsValid(), "NO_CERT record may be assigned to an allowed DS bin");
 
+var assignment = PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssignmentRequestV1(inference, noCert, "ds-12"));
+Require(assignment.Accepted && assignment.Assignment is not null && assignment.Assignment.Bin == "DS-12",
+    "Production-approved NO_CERT record must be assignable only to canonical DS-01 through DS-12 bins");
+
 var found = new CertificateLookupResultV1("CERT_FOUND", 1, "CERT-ID", "CERT-PATH", "EXACT_NORMALIZED_SERIAL");
 var unsafePending = new CameraLabScanRecordV1("record-contract-smoke-2", inference, found, "DS-01", "PENDING_DESTRUCTION");
 Require(!unsafePending.IsValid(), "CERT_FOUND record must never remain pending destruction");
+Require(!PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssignmentRequestV1(inference, found, "DS-01")).Accepted,
+    "CERT_FOUND record must never receive a pending-destruction assignment");
+Require(!PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssignmentRequestV1(inference, ambiguous, "DS-01")).Accepted,
+    "REVIEW certificate result must never receive a pending-destruction assignment");
+Require(!PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssignmentRequestV1(inference, notChecked, "DS-01")).Accepted,
+    "NOT_CHECKED certificate result must never receive a pending-destruction assignment");
+Require(!PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssignmentRequestV1(inference, noCert, "DS-13")).Accepted,
+    "Out-of-range DS bins must never be assigned");
+
+var reviewInference = inference with { SerialStatus = "REVIEW" };
+Require(!PendingDestructionPlannerV1.Evaluate(new PendingDestructionAssignmentRequestV1(reviewInference, noCert, "DS-01")).Accepted,
+    "Non-FOUND serials must never enter pending destruction tracking");
 
 Console.WriteLine("Camera Lab app integration contract v1 smoke checks passed.");
