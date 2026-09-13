@@ -180,25 +180,38 @@ def main():
     ap.add_argument('--targeted-detections')
     ap.add_argument('--capacity-view-map')
     ap.add_argument('--capacity-alternate-detections')
+    ap.add_argument('--rotated-label-view-map')
+    ap.add_argument('--rotated-label-detections')
     ap.add_argument('--out-dir',required=True)
     a=ap.parse_args()
     out=Path(a.out_dir); out.mkdir(parents=True,exist_ok=True)
     full=load_det(a.detections,'full')
     target=load_det(a.targeted_detections,'targeted')
     alt_capacity=load_det(a.capacity_alternate_detections,'capacity-alternate')
+    rotated_label=load_det(a.rotated_label_detections,'rotated-label')
     capacity_views=load_capacity_views(a.capacity_view_map)
+    rotated_views=load_capacity_views(a.rotated_label_view_map)
     if bool(a.capacity_view_map) != bool(a.capacity_alternate_detections):
         raise SystemExit('Capacity multiview recovery requires both --capacity-view-map and --capacity-alternate-detections')
+    if bool(a.rotated_label_view_map) != bool(a.rotated_label_detections):
+        raise SystemExit('Rotated-label capacity recovery requires both --rotated-label-view-map and --rotated-label-detections')
     if capacity_views:
         if len(capacity_views)!=123:
             raise SystemExit(f'Capacity view map must cover exactly 123 physical images; found {len(capacity_views)}')
         bad=[k for k,v in capacity_views.items() if len(v)!=2]
         if bad:
             raise SystemExit(f'Each physical image must have exactly two deterministic capacity views; bad count={len(bad)}')
+    if rotated_views:
+        if len(rotated_views)!=123:
+            raise SystemExit(f'Rotated label view map must cover exactly 123 physical images; found {len(rotated_views)}')
+        bad=[k for k,v in rotated_views.items() if len(v)!=1]
+        if bad:
+            raise SystemExit(f'Each physical image must have exactly one deterministic rotated label view; bad count={len(bad)}')
     images=list(csv.DictReader(open(a.images,encoding='utf-8-sig')))
     rows=[]
     alternate_model_fills=0
     alternate_capacity_fills=0
+    rotated_capacity_fills=0
     for image in images:
         fn=image['FileName']
         blocks=full.get(fn,[])
@@ -228,6 +241,18 @@ def main():
                 cap_evidence='multiview:'+alt['accept_reason']+':'+' || '.join(alt['evidence'][:4])
                 cap_status=confidence_bucket(cap_score)
                 alternate_capacity_fills+=1
+        # Final capacity-only fallback for labels whose normal orientation defeats OCR.
+        # It cannot alter serial or model fields, never replaces an existing capacity,
+        # and accepts a single rotated view only when the existing generic parser sees
+        # an explicit "capacity" anchor at the same protected >=92 score used above.
+        if cap_gb is None and rotated_views:
+            alt=choose_alternate_capacity(rotated_views.get(fn,[]),rotated_label)
+            if alt and alt['accept_reason']=='anchored-explicit-capacity':
+                cap_gb=alt['gb']
+                cap_score=alt['confidence']
+                cap_evidence='rotated-label:'+alt['accept_reason']+':'+' || '.join(alt['evidence'][:4])
+                cap_status=confidence_bucket(cap_score)
+                rotated_capacity_fills+=1
         rows.append({
             'Image':fn,
             'Manufacturer':man,
@@ -259,6 +284,7 @@ def main():
         'capacity_found':sum(bool(r['Capacity']) for r in rows),
         'model_multiview_fills':alternate_model_fills,
         'capacity_multiview_fills':alternate_capacity_fills,
+        'rotated_label_capacity_fills':rotated_capacity_fills,
         'ground_truth_consumed':False,
     }
     with open(out/'Camera-Lab-Production-Inference-Summary.json','w',encoding='utf-8') as f:
