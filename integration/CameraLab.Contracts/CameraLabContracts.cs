@@ -32,6 +32,21 @@ public sealed record CameraLabInferenceV1(
     [property: JsonPropertyName("CapacityStatus")] string CapacityStatus,
     [property: JsonPropertyName("CapacityEvidence")] string CapacityEvidence);
 
+public sealed record CertificateLookupRequestV1(
+    string Serial,
+    string SerialStatus,
+    string Image)
+{
+    public bool IsEligibleForLookup() =>
+        !string.IsNullOrWhiteSpace(Serial) &&
+        string.Equals(SerialStatus, "FOUND", StringComparison.Ordinal);
+}
+
+public interface ICertificateLookupV1
+{
+    CertificateLookupResultV1 Lookup(CertificateLookupRequestV1 request);
+}
+
 public sealed record CertificateLookupResultV1(
     string LookupStatus,
     int CertMatchCount,
