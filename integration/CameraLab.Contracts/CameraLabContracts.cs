@@ -174,6 +174,8 @@ public sealed record CameraLabScanRecordV1(
         if (!Certificate.IsValid()) return false;
         if (string.IsNullOrWhiteSpace(PendingDestructionBin)) return string.IsNullOrWhiteSpace(DestructionStatus);
         return Certificate.LookupStatus == "NO_CERT" &&
+               string.Equals(Inference.SerialStatus, "FOUND", StringComparison.Ordinal) &&
+               CameraLabContractV1.NormalizeSerial(Inference.Serial).Length > 0 &&
                CameraLabContractV1.IsAllowedDestructionBin(PendingDestructionBin) &&
                DestructionStatus == "PENDING_DESTRUCTION";
     }
