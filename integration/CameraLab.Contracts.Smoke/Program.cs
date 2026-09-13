@@ -139,6 +139,22 @@ var changedImage = pending with { Inference = inference with { Image = "differen
 Require(!PendingDestructionBatchPreflightV1.Validate(batch.Batch, new[] { changedImage, pending2 }).Accepted,
     "A batch must fail closed if image identity changes after batch creation");
 
+var boundFound = CertificateReconciliationPlannerV1.RefreshFromLookup(pending, exactLookup);
+Require(boundFound.Accepted && boundFound.Record is not null && boundFound.Record.Certificate.LookupStatus == "CERT_FOUND" &&
+        string.IsNullOrEmpty(boundFound.Record.PendingDestructionBin) && string.IsNullOrEmpty(boundFound.Record.DestructionStatus),
+    "Serial-bound reconciliation must remove pending destruction only when lookup for that record's own serial finds one exact certificate");
+
+var otherSerialOnlyLookup = new ExactSerialCertificateLookupV1(new[]
+{
+    new CertificateIndexRecordV1("SERIAL2", "CERT-OTHER", "PATH-OTHER")
+});
+var boundNoCert = CertificateReconciliationPlannerV1.RefreshFromLookup(pending, otherSerialOnlyLookup);
+Require(boundNoCert.Accepted && boundNoCert.Record is not null && boundNoCert.Record.Certificate.LookupStatus == "NO_CERT" &&
+        boundNoCert.Record.PendingDestructionBin == "DS-01" && boundNoCert.Record.DestructionStatus == "PENDING_DESTRUCTION",
+    "A certificate belonging only to another serial must never clear this record's pending-destruction assignment");
+Require(!CertificateReconciliationPlannerV1.RefreshFromLookup(pending, null).Accepted,
+    "Missing certificate lookup provider must fail closed");
+
 var reconciledFound = CertificateReconciliationPlannerV1.Reconcile(pending, found);
 Require(reconciledFound.Accepted && reconciledFound.Record is not null && reconciledFound.Record.IsValid(),
     "A newly discovered unique exact certificate must safely reconcile an existing pending record");
