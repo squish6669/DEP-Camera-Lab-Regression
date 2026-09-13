@@ -30,8 +30,8 @@ jobs:
         shell: pwsh
         run: |
           @'
-          Image,Manufacturer,Serial,Model,Capacity
-          contract-test.jpg,SAMSUNG,ABC123456,MZTEST,256 GB
+          Image,Manufacturer,Serial,SerialStatus,Model,Capacity
+          contract-test.jpg,SAMSUNG,ABC123456,FOUND,MZTEST,256 GB
           '@ | Set-Content -Encoding utf8 inference.csv
 
       - name: Verify no certificate status is invented without an index
