@@ -6,6 +6,7 @@ on:
     paths:
       - 'integration/CameraLab.Contracts/**'
       - 'integration/CameraLab.Contracts.Smoke/**'
+      - 'integration/CameraLab.RecordPlanner.Smoke/**'
       - '.github/workflows/camera-lab-app-integration-contract.yml'
   workflow_dispatch:
 
@@ -24,5 +25,8 @@ jobs:
       - name: Build stable Camera Lab contracts
         run: dotnet build integration/CameraLab.Contracts/CameraLab.Contracts.csproj --configuration Release
 
-      - name: Run safety smoke checks
+      - name: Run integration safety smoke checks
         run: dotnet run --project integration/CameraLab.Contracts.Smoke/CameraLab.Contracts.Smoke.csproj --configuration Release
+
+      - name: Run scan record creation safety checks
+        run: dotnet run --project integration/CameraLab.RecordPlanner.Smoke/CameraLab.RecordPlanner.Smoke.csproj --configuration Release
