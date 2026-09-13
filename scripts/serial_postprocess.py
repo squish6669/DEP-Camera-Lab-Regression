@@ -92,7 +92,19 @@ def extract(blocks):
     for b in blocks:
         txt=(b.get('Text') or '').strip(); conf=float(b.get('BoxConfidence') or 0)
         for m in re.finditer(r'(?i)(?:S\s*[/\\I1|]?\s*N|SN|SERIAL(?:\s*(?:NO|NUMBER|#))?)\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\-]{5,28})',txt):
-            add(130+conf*10,m.group(1),f'inline:{txt}')
+            prefix=norm(txt[m.start():m.start(1)])
+            candidate=norm(m.group(1))
+            # A fuzzy OCR S/I/N label may occur inside ordinary words such as Hsinchu,
+            # or at the start of a word such as SINGAPORE. Fail closed in those cases:
+            # embedded fuzzy labels are rejected, and delimiter-free SIN candidates must
+            # contain a digit. Real observed SIN serial labels in the protected corpus are
+            # block-leading and alphanumeric; standard SN/S/N/SERIAL anchors are unchanged.
+            if prefix == 'SIN':
+                if m.start() > 0 and txt[m.start()-1].isalpha():
+                    continue
+                if not any(ch.isdigit() for ch in candidate):
+                    continue
+            add(130+conf*10,candidate,f'inline:{txt}')
         for m in re.finditer(r'(?i)SN\s*[:#\-]\s*([A-Z0-9][A-Z0-9\-]{5,28})',txt):
             add(135+conf*10,m.group(1),f'embedded-sn:{txt}')
         pm=re.match(r'(?i)^\s*(?:S\s*[/\\I1|]?\s*N|SN|SERIAL(?:\s*(?:NO|NUMBER|#))?)\s*[:#\-]?\s*([A-Z0-9]{1,8})\s*$',txt)
