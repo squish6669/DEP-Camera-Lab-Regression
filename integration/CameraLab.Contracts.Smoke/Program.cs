@@ -104,4 +104,27 @@ Require(!PendingDestructionBatchPlannerV1.Build("batch-invalid-bin", "DS-13", ne
 Require(!PendingDestructionBatchPlannerV1.Build("batch-empty", "DS-01", Array.Empty<CameraLabScanRecordV1>()).Accepted,
     "An empty destruction batch must not be created");
 
+var reconciledFound = CertificateReconciliationPlannerV1.Reconcile(pending, found);
+Require(reconciledFound.Accepted && reconciledFound.Record is not null && reconciledFound.Record.IsValid(),
+    "A newly discovered unique exact certificate must safely reconcile an existing pending record");
+Require(reconciledFound.Record.Certificate.LookupStatus == "CERT_FOUND" &&
+        string.IsNullOrEmpty(reconciledFound.Record.PendingDestructionBin) &&
+        string.IsNullOrEmpty(reconciledFound.Record.DestructionStatus),
+    "CERT_FOUND reconciliation must remove the record from pending destruction without altering inference");
+Require(ReferenceEquals(reconciledFound.Record.Inference, pending.Inference),
+    "Certificate reconciliation must not replace or rewrite OCR inference");
+
+var reconciledNoCert = CertificateReconciliationPlannerV1.Reconcile(pending, noCert);
+Require(reconciledNoCert.Accepted && reconciledNoCert.Record is not null &&
+        reconciledNoCert.Record.PendingDestructionBin == "DS-01" &&
+        reconciledNoCert.Record.DestructionStatus == "PENDING_DESTRUCTION",
+    "A confirmed NO_CERT refresh must preserve a valid pending-destruction assignment");
+
+Require(!CertificateReconciliationPlannerV1.Reconcile(pending, ambiguous).Accepted,
+    "Ambiguous certificate refreshes must never auto-reconcile");
+Require(!CertificateReconciliationPlannerV1.Reconcile(pending, notChecked).Accepted,
+    "Unavailable certificate data must never auto-reconcile");
+Require(!CertificateReconciliationPlannerV1.Reconcile(unsafePending, found).Accepted,
+    "Invalid existing records must not be silently repaired by reconciliation");
+
 Console.WriteLine("Camera Lab app integration contract v1 smoke checks passed.");
