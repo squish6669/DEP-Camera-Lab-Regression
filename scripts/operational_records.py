@@ -64,16 +64,20 @@ def main():
     for src in inference:
         image=(src.get('Image') or '').strip()
         serial=norm_serial(src.get('Serial',''))
-        matches=certs.get(serial,[]) if serial and cert_lookup_performed else []
+        serial_status=(src.get('SerialStatus') or '').strip().upper()
+        serial_approved=(serial_status=='FOUND' and bool(serial))
+        matches=certs.get(serial,[]) if serial_approved and cert_lookup_performed else []
 
         if not cert_lookup_performed:
             lookup='NOT_CHECKED'
-        elif not serial:
+        elif not serial_approved:
             lookup='REVIEW'
         elif len(matches)==0:
             lookup='NO_CERT'
         elif len(matches)==1:
-            lookup='CERT_FOUND'
+            candidate=matches[0]
+            has_cert_metadata=bool((candidate.get('CertId') or '').strip() or (candidate.get('CertPath') or '').strip())
+            lookup='CERT_FOUND' if has_cert_metadata else 'REVIEW'
         else:
             # Duplicate exact cert records require a human decision; never silently choose one.
             lookup='REVIEW'
@@ -111,7 +115,7 @@ def main():
         'review':sum(r['LookupStatus']=='REVIEW' for r in output),
         'not_checked':sum(r['LookupStatus']=='NOT_CHECKED' for r in output),
         'pending_destruction':sum(bool(r['PendingDestructionBin']) for r in output),
-        'match_policy':'unique exact normalized serial only',
+        'match_policy':'production-approved FOUND serial + unique exact normalized serial + concrete certificate metadata',
         'allowed_destruction_bins':sorted(DS_BINS),
     }
     with open(out/'Camera-Lab-Operational-Summary.json','w',encoding='utf-8') as f:
