@@ -11,6 +11,11 @@ for (var i = 1; i <= 12; i++)
 Require(!CameraLabContractV1.IsAllowedDestructionBin("DS-00"), "DS-00 must be rejected");
 Require(!CameraLabContractV1.IsAllowedDestructionBin("DS-13"), "DS-13 must be rejected");
 
+var eligibleLookup = new CertificateLookupRequestV1("SERIAL1", "FOUND", "contract-smoke-image");
+Require(eligibleLookup.IsEligibleForLookup(), "Only a production-approved FOUND serial may enter certificate lookup");
+Require(!new CertificateLookupRequestV1("SERIAL1", "REVIEW", "contract-smoke-image").IsEligibleForLookup(), "REVIEW serial must not enter certificate lookup");
+Require(!new CertificateLookupRequestV1("", "FOUND", "contract-smoke-image").IsEligibleForLookup(), "Blank serial must not enter certificate lookup");
+
 var notChecked = new CertificateLookupResultV1("NOT_CHECKED", 0, "", "", "");
 Require(notChecked.IsValid(), "NOT_CHECKED without external cert data must be valid");
 
