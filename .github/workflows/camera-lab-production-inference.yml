@@ -14,6 +14,7 @@ on:
       - "scripts/model_target_crop.py"
       - "scripts/capacity_postprocess.py"
       - "scripts/capacity_multiview_images.py"
+      - "scripts/label_region_views.py"
       - "docs/Camera-Lab-Inference-Contract-v1.md"
       - "data/**"
       - "*Part*.zip"
@@ -136,15 +137,74 @@ jobs:
           if ($errors.Count -gt 0) { throw "Capacity alternate-view OCR reported $($errors.Count) errors" }
           "CAPACITY_ALT_RESULT_DIR=$result" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Build deterministic OCR-only label-region views
+        shell: pwsh
+        run: |
+          python scripts/label_region_views.py --images "$env:IMAGE_DIR" --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --out-dir label-region-views --expected-count 123
+          if ($LASTEXITCODE -ne 0) { throw "Label-region view generation failed" }
+          $views = @(Get-ChildItem label-region-views -File -Filter "*__label.jpg")
+          if ($views.Count -ne 123) { throw "Expected exactly 123 label-region views; found $($views.Count)" }
+
+      - name: Build deterministic 180-degree label views
+        shell: pwsh
+        run: |
+          @'
+          import csv
+          from pathlib import Path
+          from PIL import Image, ImageFilter, ImageOps
+
+          src = Path('label-region-views')
+          out = Path('rotated-label-views')
+          out.mkdir(exist_ok=True)
+          with open(src/'Label-Region-Map.csv', encoding='utf-8-sig') as f:
+              mapping=list(csv.DictReader(f))
+          if len(mapping) != 123:
+              raise SystemExit(f'Expected 123 label map rows; found {len(mapping)}')
+          rows=[]
+          for r in mapping:
+              source=r['SourceFile']
+              im=Image.open(src/r['ViewFile']).convert('L')
+              im=ImageOps.autocontrast(im, cutoff=1)
+              im=im.rotate(180, expand=False)
+              im=im.resize((im.width*2, im.height*2), Image.Resampling.LANCZOS)
+              im=im.filter(ImageFilter.UnsharpMask(radius=1.2, percent=180, threshold=2))
+              name=Path(source).stem+'__label_rot180.jpg'
+              im.save(out/name, quality=95, subsampling=0)
+              rows.append({'SourceImage':source,'ViewImage':name,'Method':'label-rot180-autocontrast-unsharp'})
+          if len(rows) != 123 or len({r['SourceImage'] for r in rows}) != 123:
+              raise SystemExit('Rotated label mapping coverage invariant failed')
+          with open(out/'Rotated-Label-Map.csv','w',encoding='utf-8-sig',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=['SourceImage','ViewImage','Method'])
+              w.writeheader(); w.writerows(rows)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw "Rotated label view generation failed" }
+          $views = @(Get-ChildItem rotated-label-views -File -Filter "*.jpg")
+          if ($views.Count -ne 123) { throw "Expected exactly 123 rotated label views; found $($views.Count)" }
+
+      - name: OCR rotated label views at 3072
+        shell: pwsh
+        run: |
+          & .\sweep-publish\DriveLabelSweep.exe "rotated-label-views" "3072"
+          if ($LASTEXITCODE -ne 0) { throw "Rotated label OCR sweep failed" }
+          $sweep = Get-ChildItem "rotated-label-views" -Directory -Filter "RapidOCR_Sweep_*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$sweep) { throw "Rotated label OCR output folder missing" }
+          $result = Join-Path $sweep.FullName "maxSideLen_3072"
+          $rows = @(Import-Csv (Join-Path $result "RapidOCR_Images.csv"))
+          if ($rows.Count -ne 123) { throw "Rotated label OCR coverage failed: $($rows.Count)/123" }
+          $errors = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Error) })
+          if ($errors.Count -gt 0) { throw "Rotated label OCR reported $($errors.Count) errors" }
+          "ROTATED_LABEL_RESULT_DIR=$result" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Run production inference without ground truth
         shell: pwsh
         run: |
-          python scripts/production_inference.py --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --images "$env:RESULT_DIR\RapidOCR_Images.csv" --targeted-detections "$env:TARGET_RESULT_DIR\RapidOCR_Detections.csv" --capacity-view-map "capacity-multiview\Capacity-Multiview-Map.csv" --capacity-alternate-detections "$env:CAPACITY_ALT_RESULT_DIR\RapidOCR_Detections.csv" --out-dir production-results
+          python scripts/production_inference.py --detections "$env:RESULT_DIR\RapidOCR_Detections.csv" --images "$env:RESULT_DIR\RapidOCR_Images.csv" --targeted-detections "$env:TARGET_RESULT_DIR\RapidOCR_Detections.csv" --capacity-view-map "capacity-multiview\Capacity-Multiview-Map.csv" --capacity-alternate-detections "$env:CAPACITY_ALT_RESULT_DIR\RapidOCR_Detections.csv" --rotated-label-view-map "rotated-label-views\Rotated-Label-Map.csv" --rotated-label-detections "$env:ROTATED_LABEL_RESULT_DIR\RapidOCR_Detections.csv" --out-dir production-results
           if ($LASTEXITCODE -ne 0) { throw "Production inference failed" }
           $s = Get-Content production-results/Camera-Lab-Production-Inference-Summary.json -Raw | ConvertFrom-Json
           if ([int]$s.images -ne 123) { throw "Production inference coverage failed: $($s.images)/123" }
           if ([bool]$s.ground_truth_consumed) { throw "Production inference must never consume ground truth" }
           "Ground-truth-free multiview capacity fills: $($s.capacity_multiview_fills)" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "Ground-truth-free rotated-label anchored capacity fills: $($s.rotated_label_capacity_fills)" | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Enforce production inference contract v1
         shell: pwsh
@@ -168,6 +228,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path diagnostic-results\full | Out-Null
           New-Item -ItemType Directory -Force -Path diagnostic-results\targeted-model | Out-Null
           New-Item -ItemType Directory -Force -Path diagnostic-results\capacity-multiview | Out-Null
+          New-Item -ItemType Directory -Force -Path diagnostic-results\rotated-label | Out-Null
           if ($env:RESULT_DIR -and (Test-Path $env:RESULT_DIR)) {
             Copy-Item "$env:RESULT_DIR\RapidOCR_Images.csv" diagnostic-results\full\ -Force -ErrorAction SilentlyContinue
             Copy-Item "$env:RESULT_DIR\RapidOCR_Detections.csv" diagnostic-results\full\ -Force -ErrorAction SilentlyContinue
@@ -180,7 +241,12 @@ jobs:
             Copy-Item "$env:CAPACITY_ALT_RESULT_DIR\RapidOCR_Images.csv" diagnostic-results\capacity-multiview\ -Force -ErrorAction SilentlyContinue
             Copy-Item "$env:CAPACITY_ALT_RESULT_DIR\RapidOCR_Detections.csv" diagnostic-results\capacity-multiview\ -Force -ErrorAction SilentlyContinue
           }
+          if ($env:ROTATED_LABEL_RESULT_DIR -and (Test-Path $env:ROTATED_LABEL_RESULT_DIR)) {
+            Copy-Item "$env:ROTATED_LABEL_RESULT_DIR\RapidOCR_Images.csv" diagnostic-results\rotated-label\ -Force -ErrorAction SilentlyContinue
+            Copy-Item "$env:ROTATED_LABEL_RESULT_DIR\RapidOCR_Detections.csv" diagnostic-results\rotated-label\ -Force -ErrorAction SilentlyContinue
+          }
           Copy-Item capacity-multiview\Capacity-Multiview-Map.csv diagnostic-results\capacity-multiview\ -Force -ErrorAction SilentlyContinue
+          Copy-Item rotated-label-views\Rotated-Label-Map.csv diagnostic-results\rotated-label\ -Force -ErrorAction SilentlyContinue
 
       - name: Upload production inference evidence
         if: always()
