@@ -12,6 +12,11 @@ public static class CameraLabContractV1
 
     public static bool IsAllowedDestructionBin(string? value) =>
         !string.IsNullOrWhiteSpace(value) && AllowedDestructionBins.Contains(value.Trim().ToUpperInvariant());
+
+    public static string NormalizeSerial(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : new string(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 }
 
 public sealed record CameraLabInferenceV1(
@@ -45,6 +50,49 @@ public sealed record CertificateLookupRequestV1(
 public interface ICertificateLookupV1
 {
     CertificateLookupResultV1 Lookup(CertificateLookupRequestV1 request);
+}
+
+public sealed record CertificateIndexRecordV1(string Serial, string CertId, string CertPath);
+
+public sealed class ExactSerialCertificateLookupV1 : ICertificateLookupV1
+{
+    private readonly IReadOnlyList<CertificateIndexRecordV1>? _records;
+
+    public ExactSerialCertificateLookupV1(IEnumerable<CertificateIndexRecordV1>? records)
+    {
+        _records = records?.ToArray();
+    }
+
+    public CertificateLookupResultV1 Lookup(CertificateLookupRequestV1 request)
+    {
+        if (!request.IsEligibleForLookup())
+            return new CertificateLookupResultV1("REVIEW", 0, "", "", "");
+
+        if (_records is null)
+            return new CertificateLookupResultV1("NOT_CHECKED", 0, "", "", "");
+
+        var normalized = CameraLabContractV1.NormalizeSerial(request.Serial);
+        if (normalized.Length == 0)
+            return new CertificateLookupResultV1("REVIEW", 0, "", "", "");
+
+        var matches = _records
+            .Where(record => CameraLabContractV1.NormalizeSerial(record.Serial) == normalized)
+            .ToArray();
+
+        if (matches.Length == 0)
+            return new CertificateLookupResultV1("NO_CERT", 0, "", "", "");
+
+        if (matches.Length != 1)
+            return new CertificateLookupResultV1("REVIEW", matches.Length, "", "", "");
+
+        var match = matches[0];
+        return new CertificateLookupResultV1(
+            "CERT_FOUND",
+            1,
+            match.CertId ?? "",
+            match.CertPath ?? "",
+            "EXACT_NORMALIZED_SERIAL");
+    }
 }
 
 public sealed record CertificateLookupResultV1(
