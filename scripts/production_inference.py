@@ -59,6 +59,17 @@ ALLOWED_GENERIC_CAPACITY_REASONS = {
 }
 
 
+# Narrow model families observed literally in the corpus but intentionally excluded from
+# the pre-serial model parser. These are eligible only after serial identity is finalized.
+POST_SERIAL_LITERAL_MODEL_PATTERNS = {
+    'SK HYNIX': (r'\bHFS[0-9A-Z]{6,16}(?:-[0-9A-Z]{4,10})\b',),
+    'WESTERN DIGITAL': (r'\bSD(?:CPNRY|BPNPZ)-?[0-9A-Z]{3,6}-[0-9A-Z]{4,8}\b',),
+    'SANDISK': (r'\bSD7SF6S-[0-9]{3}G-[0-9]{4}\b',),
+    'TOSHIBA': (r'\bMK[0-9]{4}GS[A-Z0-9]{2,3}\b',),
+    'SEAGATE': (r'\bST[0-9]{7}(?:AS|NS|SS)\b', r'\bST[0-9]{3}LT[0-9]{3}\b'),
+}
+
+
 def infer_manufacturer(blocks):
     raw=' '.join((b.get('Text') or '') for b in blocks).upper()
     compact=norm(raw)
@@ -161,6 +172,31 @@ def choose_rotated_label_model(blocks):
     return man,man_reason,candidate,score,reason
 
 
+def choose_post_serial_literal_model(man, man_reason, blocks):
+    """Fill an empty model after serial is frozen, using one literal vendor-bounded OCR token only.
+
+    This fallback cannot infer or change manufacturer, cannot replace an existing model, and never
+    consults ground truth. An explicit manufacturer label must already have won production inference,
+    and ambiguous multiple model tokens fail closed.
+    """
+    if not man or 'label:' not in (man_reason or ''):
+        return None
+    patterns=POST_SERIAL_LITERAL_MODEL_PATTERNS.get(man,())
+    if not patterns:
+        return None
+    exact={}
+    for block in blocks:
+        raw=(block.get('Text') or '').upper()
+        for pat in patterns:
+            for match in re.finditer(pat,raw,re.I):
+                candidate=norm(match.group(0))
+                if 6 <= len(candidate) <= 24:
+                    exact[candidate]=match.group(0)
+    if len(exact) != 1:
+        return None
+    return next(iter(exact)),'post-serial-literal-vendor-model'
+
+
 def choose_alternate_capacity(view_names, detections):
     by_gb={}
     for view in view_names:
@@ -235,6 +271,7 @@ def main():
     rows=[]
     alternate_model_fills=0
     rotated_model_fills=0
+    post_serial_literal_model_fills=0
     alternate_capacity_fills=0
     rotated_capacity_fills=0
     for image in images:
@@ -251,10 +288,16 @@ def main():
                 model,model_score,model_alt_reason=alt_model
                 model_reason='multiview:'+model_alt_reason+f':score={model_score}'
                 alternate_model_fills+=1
-        # Serial is intentionally finalized before any rotated-label manufacturer/model
-        # recovery below. The fallback therefore cannot alter serial selection or vendor
+        # Serial is intentionally finalized before any later literal/rotated-label model
+        # recovery. Those fallbacks therefore cannot alter serial selection or vendor
         # correction behavior and cannot weaken the protected identity gate.
         serial,serial_score,serial_reason,serial_cands=choose_serial(man,blocks,model)
+        if not model and serial:
+            literal_model=choose_post_serial_literal_model(man,man_reason,blocks)
+            if literal_model:
+                model,literal_reason=literal_model
+                model_reason=literal_reason
+                post_serial_literal_model_fills+=1
         caps=capacity_candidates(blocks,man)
         cap=caps[0] if caps else None
         cap_gb=cap['gb'] if cap else None
@@ -323,6 +366,7 @@ def main():
         'capacity_found':sum(bool(r['Capacity']) for r in rows),
         'model_multiview_fills':alternate_model_fills,
         'rotated_label_model_fills':rotated_model_fills,
+        'post_serial_literal_model_fills':post_serial_literal_model_fills,
         'capacity_multiview_fills':alternate_capacity_fills,
         'rotated_label_capacity_fills':rotated_capacity_fills,
         'ground_truth_consumed':False,
