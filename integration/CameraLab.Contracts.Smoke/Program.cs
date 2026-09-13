@@ -118,6 +118,21 @@ Require(!PendingDestructionBatchPlannerV1.Build("batch-invalid-bin", "DS-13", ne
 Require(!PendingDestructionBatchPlannerV1.Build("batch-empty", "DS-01", Array.Empty<CameraLabScanRecordV1>()).Accepted,
     "An empty destruction batch must not be created");
 
+var preflight = PendingDestructionBatchPreflightV1.Validate(batch.Batch, new[] { pending, pending2 });
+Require(preflight.Accepted && preflight.Reason == "READY_FOR_DESTRUCTION",
+    "An unchanged batch must pass final destruction preflight");
+var postCertDiscovery = pending with { Certificate = found, PendingDestructionBin = "", DestructionStatus = "" };
+Require(!PendingDestructionBatchPreflightV1.Validate(batch.Batch, new[] { postCertDiscovery, pending2 }).Accepted,
+    "A batch must fail closed when a certificate is discovered after batch creation");
+Require(!PendingDestructionBatchPreflightV1.Validate(batch.Batch, new[] { pending2 }).Accepted,
+    "A batch must fail closed when a current source record is missing");
+var changedSerial = pending with { Inference = inference with { Serial = "SERIAL9" } };
+Require(!PendingDestructionBatchPreflightV1.Validate(batch.Batch, new[] { changedSerial, pending2 }).Accepted,
+    "A batch must fail closed if serial identity changes after batch creation");
+var changedImage = pending with { Inference = inference with { Image = "different-image" } };
+Require(!PendingDestructionBatchPreflightV1.Validate(batch.Batch, new[] { changedImage, pending2 }).Accepted,
+    "A batch must fail closed if image identity changes after batch creation");
+
 var reconciledFound = CertificateReconciliationPlannerV1.Reconcile(pending, found);
 Require(reconciledFound.Accepted && reconciledFound.Record is not null && reconciledFound.Record.IsValid(),
     "A newly discovered unique exact certificate must safely reconcile an existing pending record");
