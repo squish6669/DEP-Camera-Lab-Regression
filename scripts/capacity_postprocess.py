@@ -16,9 +16,55 @@ CAPACITY_CANONICAL_MB = {
 
 COMMON_GB = set(CAPACITY_CANONICAL_MB)
 
+# Keep regression capacity selection independent of scoring labels. These are the same
+# literal vendor labels/families used by production inference; ground truth is consulted
+# only after a capacity has already been selected from OCR evidence.
+CAPACITY_VENDOR_HINTS = [
+    ('SAMSUNG', ('SAMSUNG',), (r'MZVLB', r'MZ7TE', r'MZ7PD', r'MZ75E')),
+    ('INTEL', ('INTEL',), (r'SSDPEM', r'SSDPEK')),
+    ('KIOXIA', ('KIOXIA',), (r'KXG', r'KSG')),
+    ('TOSHIBA', ('TOSHIBA',), (r'MQ01', r'DT01')),
+    ('WESTERN DIGITAL', ('WESTERN DIGITAL','WDC'), (r'SDBQNTY', r'\bWD[A-Z0-9-]{8,}')),
+    ('MICRON', ('MICRON',), (r'MTFDDA',)),
+    ('SK HYNIX', ('SK HYNIX','HYNIX'), (r'HFM[A-Z0-9]{8,}',)),
+    ('SANDISK', ('SANDISK','SAN DISK'), (r'SD6SP1M',)),
+    ('LITE-ON', ('LITE-ON','LITEON','LITE ON'), (r'\bLJT[A-Z0-9-]{5,}', r'\bLCH[A-Z0-9-]{5,}')),
+    ('SEAGATE', ('SEAGATE',), (r'\bST\d{3,4}(?:LM|DM)\d{3}',)),
+    ('HGST', ('HGST','HITACHI'), (r'\bHTS[A-Z0-9]{8,}', r'\bZ7K\d{3}')),
+    ('FUJITSU', ('FUJITSU',), (r'\bMHV[A-Z0-9]{7,}',)),
+    ('CRUCIAL', ('CRUCIAL',), (r'\bCT\d{3,4}MX[A-Z0-9]{5,}',)),
+]
+
 
 def norm_text(s):
     return (s or '').upper().replace(',', '')
+
+
+def compact_text(s):
+    return re.sub(r'[^A-Z0-9]', '', norm_text(s))
+
+
+def infer_manufacturer(blocks):
+    raw=' '.join((b.get('Text') or '') for b in blocks).upper()
+    compact=compact_text(raw)
+    scored=[]
+    for name,labels,patterns in CAPACITY_VENDOR_HINTS:
+        score=0
+        for label in labels:
+            if label in raw:
+                score=max(score,100)
+        for pat in patterns:
+            if re.search(pat,raw,re.I) or re.search(pat,compact,re.I):
+                score=max(score,80)
+        if score:
+            scored.append((score,name))
+    scored.sort(reverse=True)
+    if not scored:
+        return ''
+    # Family-only ties are ambiguous and must fail closed rather than selecting a vendor.
+    if len(scored)>1 and scored[0][0] == scored[1][0] and scored[0][0] < 100:
+        return ''
+    return scored[0][1]
 
 
 def expected_to_gb(s):
@@ -57,7 +103,6 @@ def add_candidate(out, gb, score, reason, text, conf):
 def extract_candidates(blocks, manufacturer=''):
     out=[]
     man=(manufacturer or '').upper()
-    all_text=' '.join(norm_text(b.get('Text')) for b in blocks)
 
     for b in blocks:
         text=norm_text(b.get('Text'))
@@ -187,13 +232,16 @@ def main():
     rows=[]
     for g in gt:
         fn=g['Image']; exp=expected_to_gb(g.get('ExpectedCapacity',''))
-        candidates=extract_candidates(det.get(fn,[]),g.get('ExpectedManufacturer',''))
+        blocks=det.get(fn,[])
+        inferred_manufacturer=infer_manufacturer(blocks)
+        candidates=extract_candidates(blocks,inferred_manufacturer)
         pick=candidates[0] if candidates else None
         selected=pick['gb'] if pick else None
         score=pick['score'] if pick else 0
         rows.append({
             'Image':fn,
             'Manufacturer':g.get('ExpectedManufacturer',''),
+            'InferredManufacturer':inferred_manufacturer,
             'ExpectedCapacity':canonical_display(exp),
             'SelectedCapacity':canonical_display(selected),
             'CapacityGB':selected or '',
