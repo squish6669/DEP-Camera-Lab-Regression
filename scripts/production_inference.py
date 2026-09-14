@@ -113,6 +113,13 @@ def choose_serial(man, blocks, model=''):
     if rr:
         selected=recovered; reason=rr
     corrected,cr=vendor_correct(man,selected,model)
+    # Identity must fail closed on very short mixed OCR tokens. The verified corpus has
+    # no trusted serial shorter than eight characters; short tokens seen in the newer
+    # unverified set include regulatory/metadata fragments adjacent to SERIAL text.
+    # Vendor recovery runs first, so a strict vendor-specific recovery can still produce
+    # a valid >=8-character serial before this final production guard is applied.
+    if corrected and len(norm(corrected)) < 8:
+        return '',score,'reject-short-serial-candidate:'+norm(corrected),cands
     return corrected,score,(cr or reason),cands
 
 
