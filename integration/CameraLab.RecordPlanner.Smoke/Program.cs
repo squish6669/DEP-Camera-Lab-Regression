@@ -49,4 +49,9 @@ var invalidFound = new CertificateLookupResultV1("CERT_FOUND", 2, "", "", "EXACT
 Require(!CameraLabScanRecordPlannerV1.Create("record-9", foundInference, invalidFound).Accepted,
     "Invalid or ambiguous CERT_FOUND structures must be rejected");
 
+var invalidInference = foundInference with { SerialStatus = "FOUND", SerialEvidence = "" };
+var invalidInferenceResult = CameraLabScanRecordPlannerV1.Create("record-10", invalidInference, reviewCert);
+Require(!invalidInferenceResult.Accepted && invalidInferenceResult.Reason == "INVALID_INFERENCE",
+    "Record persistence must fail closed when inference violates the stable production evidence contract");
+
 Console.WriteLine("Camera Lab scan record planner smoke checks passed.");
