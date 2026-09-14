@@ -119,3 +119,44 @@ jobs:
           if ($expectedFailure -eq 0) { throw "Invalid DS-13 assignment was accepted" }
           $global:LASTEXITCODE = 0
           Write-Host "Invalid DS-13 correctly rejected; allowed range remains DS-01 through DS-12."
+
+      - name: Verify orphan destruction assignment is rejected
+        shell: pwsh
+        run: |
+          @'
+          Image,Serial,Bin
+          wrong-image.jpg,ABC123456,DS-01
+          '@ | Set-Content -Encoding utf8 orphan-assignment.csv
+          python scripts/operational_records.py --inference inference.csv --cert-index no-match-cert.csv --destruction-assignments orphan-assignment.csv --out-dir orphan-results
+          $expectedFailure = $LASTEXITCODE
+          if ($expectedFailure -eq 0) { throw "Destruction assignment without an exact inference identity was accepted" }
+          $global:LASTEXITCODE = 0
+          Write-Host "Orphan destruction assignment correctly rejected."
+
+      - name: Verify duplicate approved serial identity is rejected
+        shell: pwsh
+        run: |
+          @'
+          Image,Manufacturer,Serial,SerialStatus,Model,Capacity
+          drive-a.jpg,SAMSUNG,DUP123456,FOUND,MZTEST,256 GB
+          drive-b.jpg,SAMSUNG,DUP123456,FOUND,MZTEST,256 GB
+          '@ | Set-Content -Encoding utf8 duplicate-identity.csv
+          python scripts/operational_records.py --inference duplicate-identity.csv --cert-index no-match-cert.csv --out-dir duplicate-identity-results
+          $expectedFailure = $LASTEXITCODE
+          if ($expectedFailure -eq 0) { throw "Duplicate approved serial identity was accepted" }
+          $global:LASTEXITCODE = 0
+          Write-Host "Duplicate approved serial identity correctly rejected."
+
+      - name: Verify one serial cannot be assigned to multiple destruction images
+        shell: pwsh
+        run: |
+          @'
+          Image,Serial,Bin
+          drive-a.jpg,DUP123456,DS-01
+          drive-b.jpg,DUP123456,DS-02
+          '@ | Set-Content -Encoding utf8 ambiguous-assignments.csv
+          python scripts/operational_records.py --inference inference.csv --destruction-assignments ambiguous-assignments.csv --out-dir ambiguous-assignment-results
+          $expectedFailure = $LASTEXITCODE
+          if ($expectedFailure -eq 0) { throw "One serial was accepted for multiple destruction images" }
+          $global:LASTEXITCODE = 0
+          Write-Host "Ambiguous destruction serial identity correctly rejected."
