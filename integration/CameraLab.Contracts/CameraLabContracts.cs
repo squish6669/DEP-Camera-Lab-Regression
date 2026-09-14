@@ -113,6 +113,11 @@ public sealed record CertificateLookupResultV1(
             return CertMatchCount == 1 &&
                    CertMatchMethod == "EXACT_NORMALIZED_SERIAL" &&
                    (!string.IsNullOrWhiteSpace(CertId) || !string.IsNullOrWhiteSpace(CertPath));
+        if (LookupStatus == "NO_CERT" || LookupStatus == "NOT_CHECKED")
+            return CertMatchCount == 0 &&
+                   string.IsNullOrEmpty(CertMatchMethod) &&
+                   string.IsNullOrEmpty(CertId) &&
+                   string.IsNullOrEmpty(CertPath);
         return string.IsNullOrEmpty(CertMatchMethod) && string.IsNullOrEmpty(CertId) && string.IsNullOrEmpty(CertPath);
     }
 }
