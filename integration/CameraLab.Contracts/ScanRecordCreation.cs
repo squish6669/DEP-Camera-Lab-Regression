@@ -16,8 +16,11 @@ public static class CameraLabScanRecordPlannerV1
             return new CameraLabScanRecordCreationResultV1(false, "INVALID_RECORD_ID", null);
         if (inference is null || certificate is null)
             return new CameraLabScanRecordCreationResultV1(false, "INVALID_INPUT", null);
-        if (string.IsNullOrWhiteSpace(inference.Image))
-            return new CameraLabScanRecordCreationResultV1(false, "INVALID_IMAGE", null);
+
+        var inferenceValidation = CameraLabInferenceValidatorV1.Validate(inference);
+        if (!inferenceValidation.Accepted)
+            return new CameraLabScanRecordCreationResultV1(false, "INVALID_INFERENCE", null);
+
         if (!certificate.IsValid())
             return new CameraLabScanRecordCreationResultV1(false, "INVALID_CERTIFICATE_RESULT", null);
 
