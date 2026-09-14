@@ -90,6 +90,13 @@ internal static class OperationalBridgeSmoke
         Require(!rejected.Accepted && rejected.Reason == "INVALID_INFERENCE",
             "Evidence-contract drift must fail before certificate lookup or persistence");
 
+        var invalidRecordCountingLookup = new CountingCertificateLookup();
+        var invalidRecord = CameraLabOperationalBridgeV1.Process("   ", valid, invalidRecordCountingLookup);
+        Require(!invalidRecord.Accepted && invalidRecord.Reason == "INVALID_RECORD_ID" && invalidRecord.Record is null,
+            "Blank persistent record identities must fail closed at the operational boundary");
+        Require(invalidRecordCountingLookup.CallCount == 0,
+            "A scan without a valid persistent record identity must never reach an external certificate provider");
+
         var lookupFailure = CameraLabOperationalBridgeV1.Process("REC-6", valid, new ThrowingCertificateLookup());
         Require(!lookupFailure.Accepted && lookupFailure.Reason == "CERTIFICATE_LOOKUP_ERROR" && lookupFailure.Record is null,
             "A certificate lookup exception must fail closed without guessing NO_CERT or creating a record");
