@@ -43,7 +43,8 @@ public sealed record CertificateLookupRequestV1(
     string Image)
 {
     public bool IsEligibleForLookup() =>
-        !string.IsNullOrWhiteSpace(Serial) &&
+        !string.IsNullOrWhiteSpace(Image) &&
+        CameraLabContractV1.NormalizeSerial(Serial).Length > 0 &&
         string.Equals(SerialStatus, "FOUND", StringComparison.Ordinal);
 }
 
