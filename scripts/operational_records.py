@@ -29,6 +29,7 @@ def build_cert_index(rows):
 
 def build_assignments(rows):
     out={}
+    serial_owners={}
     for row in rows:
         image=(row.get('Image') or '').strip()
         serial=norm_serial(row.get('Serial',''))
@@ -40,6 +41,10 @@ def build_assignments(rows):
         key=(image,serial)
         if key in out:
             raise ValueError(f'Duplicate destruction assignment for {image} / {serial}')
+        prior_image=serial_owners.get(serial)
+        if prior_image is not None and prior_image != image:
+            raise ValueError(f'Ambiguous destruction identity: serial {serial} is assigned to multiple images ({prior_image}, {image})')
+        serial_owners[serial]=image
         out[key]=bin_id
     return out
 
@@ -61,11 +66,18 @@ def main():
     cert_lookup_performed=bool(a.cert_index)
 
     output=[]
+    approved_serial_owners={}
+    matched_assignment_keys=set()
     for src in inference:
         image=(src.get('Image') or '').strip()
         serial=norm_serial(src.get('Serial',''))
         serial_status=(src.get('SerialStatus') or '').strip().upper()
         serial_approved=(serial_status=='FOUND' and bool(serial))
+        if serial_approved:
+            prior_image=approved_serial_owners.get(serial)
+            if prior_image is not None and prior_image != image:
+                raise SystemExit(f'Ambiguous production identity: approved serial {serial} appears on multiple images ({prior_image}, {image})')
+            approved_serial_owners[serial]=image
         matches=certs.get(serial,[]) if serial_approved and cert_lookup_performed else []
 
         if not cert_lookup_performed:
@@ -85,6 +97,8 @@ def main():
         cert=matches[0] if lookup=='CERT_FOUND' else {}
         key=(image,serial)
         bin_id=assignments.get(key,'')
+        if bin_id:
+            matched_assignment_keys.add(key)
         if bin_id and lookup!='NO_CERT':
             raise SystemExit(f'Destruction assignment rejected for {image}: lookup status is {lookup}, not NO_CERT')
 
@@ -99,6 +113,11 @@ def main():
             'DestructionStatus':'PENDING_DESTRUCTION' if bin_id else '',
         })
         output.append(row)
+
+    unmatched_assignments=sorted(set(assignments)-matched_assignment_keys)
+    if unmatched_assignments:
+        detail=', '.join(f'{image} / {serial}' for image,serial in unmatched_assignments)
+        raise SystemExit(f'Destruction assignment does not match an exact inference identity: {detail}')
 
     out=Path(a.out_dir); out.mkdir(parents=True,exist_ok=True)
     fields=list(output[0].keys())
@@ -116,6 +135,7 @@ def main():
         'not_checked':sum(r['LookupStatus']=='NOT_CHECKED' for r in output),
         'pending_destruction':sum(bool(r['PendingDestructionBin']) for r in output),
         'match_policy':'production-approved FOUND serial + unique exact normalized serial + concrete certificate metadata',
+        'destruction_identity_policy':'exact inference image+serial; duplicate approved serial identity fails closed',
         'allowed_destruction_bins':sorted(DS_BINS),
     }
     with open(out/'Camera-Lab-Operational-Summary.json','w',encoding='utf-8') as f:
