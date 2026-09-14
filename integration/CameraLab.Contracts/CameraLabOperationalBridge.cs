@@ -18,6 +18,11 @@ public static class CameraLabOperationalBridgeV1
         CameraLabInferenceV1? inference,
         ICertificateLookupV1? certificateLookup)
     {
+        // A certificate query must always be attributable to a valid persistent scan identity.
+        // Reject malformed record IDs before any external provider can be invoked.
+        if (string.IsNullOrWhiteSpace(recordId))
+            return new CameraLabOperationalBridgeResultV1(false, "INVALID_RECORD_ID", null);
+
         if (inference is null)
             return new CameraLabOperationalBridgeResultV1(false, "INVALID_INFERENCE", null);
 
