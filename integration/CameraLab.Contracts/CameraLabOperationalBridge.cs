@@ -36,16 +36,27 @@ public static class CameraLabOperationalBridgeV1
                 inference.Serial,
                 inference.SerialStatus,
                 inference.Image);
-            try
+
+            // Enforce lookup eligibility at the application boundary, not only inside a
+            // particular lookup implementation. Unapproved or unresolved serial identity
+            // must never be sent to any external certificate provider.
+            if (!request.IsEligibleForLookup())
             {
-                certificate = certificateLookup.Lookup(request);
+                certificate = new CertificateLookupResultV1("REVIEW", 0, "", "", "");
             }
-            catch (Exception)
+            else
             {
-                // External certificate data is operational input, not OCR ground truth.
-                // A lookup failure must never be converted into a guessed NO_CERT or
-                // allowed to create a persistent record with an actionable conclusion.
-                return new CameraLabOperationalBridgeResultV1(false, "CERTIFICATE_LOOKUP_ERROR", null);
+                try
+                {
+                    certificate = certificateLookup.Lookup(request);
+                }
+                catch (Exception)
+                {
+                    // External certificate data is operational input, not OCR ground truth.
+                    // A lookup failure must never be converted into a guessed NO_CERT or
+                    // allowed to create a persistent record with an actionable conclusion.
+                    return new CameraLabOperationalBridgeResultV1(false, "CERTIFICATE_LOOKUP_ERROR", null);
+                }
             }
         }
 
