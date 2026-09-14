@@ -69,6 +69,13 @@ POST_SERIAL_LITERAL_MODEL_PATTERNS = {
     'SEAGATE': (r'\bST[0-9]{7}(?:AS|NS|SS)\b', r'\bST[0-9]{3}LT[0-9]{3}\b'),
 }
 
+# A still narrower late-stage pair recovery for labels where the printed vendor name is
+# slightly corrupted by OCR but one literal, vendor-unique model family survives intact.
+# This runs only after serial and capacity are frozen, so it cannot influence identity.
+POST_IDENTITY_LITERAL_VENDOR_MODEL_PATTERNS = {
+    'SANDISK': (r'\bSD7SB3Q-[0-9]{3}G-[0-9]{4}\b',),
+}
+
 
 def infer_manufacturer(blocks):
     raw=' '.join((b.get('Text') or '') for b in blocks).upper()
@@ -197,6 +204,27 @@ def choose_post_serial_literal_model(man, man_reason, blocks):
     return next(iter(exact)),'post-serial-literal-vendor-model'
 
 
+def choose_post_identity_literal_pair(blocks):
+    """Fill an empty manufacturer/model pair after serial and capacity are immutable.
+
+    Only one literal token from one vendor-unique, tightly bounded family may win. The function has no
+    ground-truth inputs, never synthesizes a token, and fails closed on multiple distinct candidates.
+    """
+    exact={}
+    for block in blocks:
+        raw=(block.get('Text') or '').upper()
+        for vendor,patterns in POST_IDENTITY_LITERAL_VENDOR_MODEL_PATTERNS.items():
+            for pat in patterns:
+                for match in re.finditer(pat,raw,re.I):
+                    candidate=norm(match.group(0))
+                    if 8 <= len(candidate) <= 24:
+                        exact[(vendor,candidate)]=match.group(0)
+    if len(exact) != 1:
+        return None
+    (vendor,candidate),evidence=next(iter(exact.items()))
+    return vendor,candidate,'post-identity-literal-vendor-model:'+evidence
+
+
 def choose_alternate_capacity(view_names, detections):
     by_gb={}
     for view in view_names:
@@ -272,6 +300,7 @@ def main():
     alternate_model_fills=0
     rotated_model_fills=0
     post_serial_literal_model_fills=0
+    post_identity_literal_pair_fills=0
     alternate_capacity_fills=0
     rotated_capacity_fills=0
     for image in images:
@@ -335,6 +364,15 @@ def main():
                     man_reason='rotated-label:'+rot_man_reason
                     model_reason='rotated-label:literal-vendor-family:'+rot_model_reason+f':score={model_score}'
                     rotated_model_fills+=1
+        # Last, family-only pair recovery is deliberately after serial and capacity are
+        # frozen. It may improve descriptive metadata but can never feed identity logic.
+        if not model and not man:
+            literal_pair=choose_post_identity_literal_pair(blocks)
+            if literal_pair:
+                man,model,pair_reason=literal_pair
+                man_reason=pair_reason
+                model_reason=pair_reason
+                post_identity_literal_pair_fills+=1
         rows.append({
             'Image':fn,
             'Manufacturer':man,
@@ -367,6 +405,7 @@ def main():
         'model_multiview_fills':alternate_model_fills,
         'rotated_label_model_fills':rotated_model_fills,
         'post_serial_literal_model_fills':post_serial_literal_model_fills,
+        'post_identity_literal_pair_fills':post_identity_literal_pair_fills,
         'capacity_multiview_fills':alternate_capacity_fills,
         'rotated_label_capacity_fills':rotated_capacity_fills,
         'ground_truth_consumed':False,
