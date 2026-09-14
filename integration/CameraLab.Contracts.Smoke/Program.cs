@@ -25,6 +25,10 @@ Require(notChecked.LookupStatus == "NOT_CHECKED" && notChecked.IsValid(), "Missi
 var noCertLookup = new ExactSerialCertificateLookupV1(Array.Empty<CertificateIndexRecordV1>());
 var noCert = noCertLookup.Lookup(eligibleLookup);
 Require(noCert.LookupStatus == "NO_CERT" && noCert.CertMatchCount == 0 && noCert.IsValid(), "Supplied index with no exact serial must return NO_CERT");
+Require(!new CertificateLookupResultV1("NO_CERT", 1, "", "", "").IsValid(),
+    "NO_CERT must fail closed if the lookup reports any certificate matches");
+Require(!new CertificateLookupResultV1("NOT_CHECKED", 1, "", "", "").IsValid(),
+    "NOT_CHECKED must fail closed if a contradictory certificate match count is supplied");
 
 var exactLookup = new ExactSerialCertificateLookupV1(new[]
 {
