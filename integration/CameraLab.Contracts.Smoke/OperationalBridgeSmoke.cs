@@ -9,6 +9,17 @@ internal static class OperationalBridgeSmoke
             throw new InvalidOperationException("simulated certificate index failure");
     }
 
+    private sealed class CountingCertificateLookup : ICertificateLookupV1
+    {
+        public int CallCount { get; private set; }
+
+        public CertificateLookupResultV1 Lookup(CertificateLookupRequestV1 request)
+        {
+            CallCount++;
+            return new CertificateLookupResultV1("NO_CERT", 0, "", "", "");
+        }
+    }
+
     [ModuleInitializer]
     internal static void Run()
     {
@@ -67,9 +78,12 @@ internal static class OperationalBridgeSmoke
             CapacityStatus = "REVIEW",
             CapacityEvidence = ""
         };
-        var review = CameraLabOperationalBridgeV1.Process("REC-4", unresolved, certLookup);
+        var countingLookup = new CountingCertificateLookup();
+        var review = CameraLabOperationalBridgeV1.Process("REC-4", unresolved, countingLookup);
         Require(review.Accepted && review.Record?.Certificate.LookupStatus == "REVIEW",
             "Unresolved serial identity must remain REVIEW and must not enter cert matching");
+        Require(countingLookup.CallCount == 0,
+            "Unresolved serial identity must never be sent to an external certificate provider");
 
         var invalid = valid with { SerialEvidence = "" };
         var rejected = CameraLabOperationalBridgeV1.Process("REC-5", invalid, certLookup);
