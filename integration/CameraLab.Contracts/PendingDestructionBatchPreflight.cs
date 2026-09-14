@@ -24,13 +24,25 @@ public static class PendingDestructionBatchPreflightV1
         // Destruction must fail closed if the same production-approved serial identity is present
         // in more than one current scan record, even when only one copy was placed in this batch.
         // This prevents a duplicate scan/history row from making the physical drive identity ambiguous.
-        var approvedSerials = records
+        var approvedRecords = records
             .Where(record => string.Equals(record.Inference.SerialStatus, "FOUND", StringComparison.Ordinal))
+            .ToArray();
+        var approvedSerials = approvedRecords
             .Select(record => CameraLabContractV1.NormalizeSerial(record.Inference.Serial))
             .Where(serial => serial.Length > 0)
             .ToArray();
         if (approvedSerials.Distinct(StringComparer.Ordinal).Count() != approvedSerials.Length)
             return new PendingDestructionBatchPreflightResultV1(false, "DUPLICATE_CURRENT_SERIAL_IDENTITY");
+
+        // A single physical source image must never support more than one current production-approved
+        // destruction identity. Distinct serials tied to the same image are contradictory evidence and
+        // require review rather than allowing either record to advance to destruction.
+        var approvedImages = approvedRecords
+            .Select(record => record.Inference.Image?.Trim() ?? string.Empty)
+            .Where(image => image.Length > 0)
+            .ToArray();
+        if (approvedImages.Distinct(StringComparer.Ordinal).Count() != approvedImages.Length)
+            return new PendingDestructionBatchPreflightResultV1(false, "DUPLICATE_CURRENT_IMAGE_IDENTITY");
 
         var byId = records.ToDictionary(record => record.RecordId, StringComparer.Ordinal);
         foreach (var entry in batch.Entries)
